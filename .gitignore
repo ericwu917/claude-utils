@@ -1,0 +1,7 @@
+# Worktrees created by hooks/worktree-create.sh inside consumer repos.
+# (Not expected to appear in this repo itself, but defensive.)
+.claude/worktrees/
+
+# Local test scratch
+.test-home/
+/tmp-*
