@@ -9,6 +9,14 @@ schema shifts) may land in minor versions.
 
 ## [Unreleased]
 
+### Fixed
+- `statusline/statusline.sh`: rate-limit bar (`5h` / `7d`) time-marker
+  misalignment on macOS. The previous implementation used `${var:offset:length}`
+  string slicing, which bash 3.2 (`/bin/bash`) interprets as bytes; since the
+  fill characters `█` and `░` are 3 bytes each in UTF-8, a slice could cut a
+  codepoint in half and the terminal would drop the orphan bytes, collapsing
+  the bar by one column. Now constructed by per-character loop. (#1)
+
 ## [0.1.0] - 2026-04-18
 
 ### Added

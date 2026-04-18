@@ -101,14 +101,18 @@ make_rate_bar() {
     [ "$time_pos" -lt 0 ] && time_pos=0
     [ "$time_pos" -ge "$width" ] && time_pos=$((width - 1))
     local color=${color_override:-$(rate_bar_color "$usage_pct" "$time_pct")}
-    # Build fill + empty strings, then splice │ at time_pos
-    local fill="" empty_str=""
-    [ "$usage_pos" -gt 0 ] && fill=$(printf "%${usage_pos}s" | tr ' ' '█')
-    local empty_len=$((width - usage_pos))
-    [ "$empty_len" -gt 0 ] && empty_str=$(printf "%${empty_len}s" | tr ' ' '░')
-    local raw="${fill}${empty_str}"
-    local before="${raw:0:$time_pos}"
-    local after="${raw:$((time_pos + 1))}"
+    # Construct before/after directly by counting characters. Do not use
+    # ${var:offset:length}: bash 3.2 (macOS /bin/bash) slices by bytes, and
+    # our fill chars (█ U+2588, ░ U+2591) are 3 bytes each in UTF-8 — cutting
+    # mid-codepoint leaves orphan bytes that the terminal drops, shifting the
+    # bar by one column. See issue #1.
+    local before="" after="" i
+    for (( i = 0; i < time_pos; i++ )); do
+        if [ "$i" -lt "$usage_pos" ]; then before+="█"; else before+="░"; fi
+    done
+    for (( i = time_pos + 1; i < width; i++ )); do
+        if [ "$i" -lt "$usage_pos" ]; then after+="█"; else after+="░"; fi
+    done
     echo "${color}${before}${RESET}${DIM}│${RESET}${color}${after}${RESET}"
 }
 
