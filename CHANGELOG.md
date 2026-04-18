@@ -9,12 +9,6 @@ schema shifts) may land in minor versions.
 
 ## [Unreleased]
 
-### Changed
-- Documentation switched to English-primary. The former Chinese `README.md`,
-  `statusline/README.md`, and `docs/SETTINGS_MERGE.md` now live at
-  `README.zh.md`, `statusline/README.zh.md`, and `docs/SETTINGS_MERGE.zh.md`
-  respectively. Each version links to the other at the top.
-
 ## [0.1.0] - 2026-04-18
 
 ### Added
@@ -31,6 +25,9 @@ schema shifts) may land in minor versions.
   `docs/SETTINGS_MERGE.md` for manual resolution.
 - `docs/SETTINGS_MERGE.md` — manual merge guide + Claude-driven merge prompt.
 - `LICENSE` (MIT), `.gitignore`.
+- English-primary documentation (`README.md`, `statusline/README.md`,
+  `docs/SETTINGS_MERGE.md`), with Chinese versions preserved at the `.zh.md`
+  siblings and cross-linked at the top of each file.
 
 [Unreleased]: https://github.com/taige/claude-utils/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/taige/claude-utils/releases/tag/v0.1.0
