@@ -6,10 +6,9 @@
 
 ## 效果预览
 
-```
-[Opus 4.6 (1M context)] 📁 project | 🔀 master | 3 files +25 -10 | ↑50k ↓20k | $0.50
-████████░░░░░░░░░░░░ 35% (70k/200k) | 5h ██░░│░░░░░ 27% (3h12m) | 7d ████░░│░░░░░░░ 30% (5d8h)
-```
+<p align="center">
+  <img src="../docs/images/statusline.png" alt="双行状态栏效果 —— 第一行展示模型、目录、分支与 diff、token 吞吐、费用；第二行展示上下文窗口 + 5h/7d 速率限制进度条（叠加时间进度标记）" width="820" />
+</p>
 
 ## 布局说明
 

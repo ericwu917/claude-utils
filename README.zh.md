@@ -2,6 +2,10 @@
 
 个人 Claude Code 扩展积累：worktree 生命周期 hooks、双行状态栏等。
 
+<p align="center">
+  <img src="docs/images/statusline.png" alt="claude-utils 状态栏 —— 第一行展示 Opus 4.7 (1M context)、分支与 diff、token 吞吐与费用；第二行展示上下文窗口 + 5h/7d 速率限制进度条（叠加时间进度标记）" width="820" />
+</p>
+
 > **现状**：给个人用，但每一处"踩坑点"都写成了可复用组件。欢迎拿走、改造、提 issue。
 >
 > **License**：MIT · [English README](README.md)

@@ -6,10 +6,9 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 
 ## Preview
 
-```
-[Opus 4.6 (1M context)] 📁 project | 🔀 master | 3 files +25 -10 | ↑50k ↓20k | $0.50
-████████░░░░░░░░░░░░ 35% (70k/200k) | 5h ██░░│░░░░░ 27% (3h12m) | 7d ████░░│░░░░░░░ 30% (5d8h)
-```
+<p align="center">
+  <img src="../docs/images/statusline.png" alt="dual-line statusline preview — line 1 model, directory, branch + diff, token throughput, cost; line 2 context window + 5h/7d rate-limit bars with time markers" width="820" />
+</p>
 
 ## Layout
 

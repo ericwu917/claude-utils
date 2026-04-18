@@ -2,6 +2,10 @@
 
 Personal Claude Code extensions: worktree lifecycle hooks and a custom terminal statusline.
 
+<p align="center">
+  <img src="docs/images/statusline.png" alt="claude-utils statusline — dual-line layout showing Opus 4.7 (1M context), branch and diff, token throughput and cost on line 1; context-window and 5h/7d rate-limit progress bars with time markers on line 2" width="820" />
+</p>
+
 > Small-scale personal tooling, but every "gotcha I hit" is packaged as a reusable component. Fork it, tweak it, file issues.
 >
 > **License**: MIT · [中文 README](README.zh.md)
