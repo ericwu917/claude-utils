@@ -1,127 +1,131 @@
-# Claude Code 自定义状态栏
+# Custom Claude Code statusline
 
-自定义的 Claude Code 终端状态栏脚本，双行布局，实时显示工作环境和会话状态。
+A dual-line terminal statusline for Claude Code. Real-time view of your work environment and session state.
 
-## 效果预览
+[中文版](README.zh.md)
+
+## Preview
 
 ```
 [Opus 4.6 (1M context)] 📁 project | 🔀 master | 3 files +25 -10 | ↑50k ↓20k | $0.50
 ████████░░░░░░░░░░░░ 35% (70k/200k) | 5h ██░░│░░░░░ 27% (3h12m) | 7d ████░░│░░░░░░░ 30% (5d8h)
 ```
 
-## 布局说明
+## Layout
 
-### 第一行 — 工作环境
+### Line 1 — work environment
 
-| 字段 | 说明 |
+| Field | Description |
 |------|------|
-| `[Opus 4.6 (1M context)]` | 当前模型 |
-| `📁 project` | 项目目录名 |
-| `🔀 master` | Git 分支 |
-| `3 files +25 -10` | 未提交的文件变更（`git diff --shortstat HEAD`） |
-| `↑50k ↓20k` | 本次会话累计输入/输出 token 数 |
-| `$0.50` | 本次会话累计费用 |
+| `[Opus 4.6 (1M context)]` | Current model |
+| `📁 project` | Project directory name |
+| `🔀 master` | Git branch |
+| `3 files +25 -10` | Uncommitted file changes (`git diff --shortstat HEAD`) |
+| `↑50k ↓20k` | Cumulative input/output tokens this session |
+| `$0.50` | Cumulative session cost |
 
-### 第二行 — 配额状态
+### Line 2 — quota status
 
-| 字段 | 说明 |
+| Field | Description |
 |------|------|
-| `████░░░░ 35% (70k/200k)` | 上下文窗口用量（20 字符宽） |
-| `5h ██░│░░░ 27% (3h12m)` | 5 小时滚动窗口用量（10 字符宽） |
-| `7d ████░│░░░░░░ 30% (5d8h)` | 7 天窗口用量（14 字符宽） |
+| `████░░░░ 35% (70k/200k)` | Context window usage (20-char bar) |
+| `5h ██░│░░░ 27% (3h12m)` | 5-hour rolling-window usage (10-char bar) |
+| `7d ████░│░░░░░░ 30% (5d8h)` | 7-day window usage (14-char bar) |
 
-## 核心特性
+## Core features
 
-### 速率限制进度条 + 时间标记
+### Rate-limit progress bar with time marker
 
-5h 和 7d 进度条上叠加了一条时间进度标记 `│`，可以直观判断消耗速率是否可持续：
+The 5h and 7d bars overlay a time-progress marker `│` so you can tell at a glance whether your burn rate is sustainable:
 
 ```
-用量 < 时间进度 → 绿色（可持续）
+usage < time progress → green (sustainable)
   5h ██│░░░░░░░ 27%
 
-用量 > 时间进度 → 黄色/橙色（偏快）
+usage > time progress → yellow/orange (burning too fast)
   5h █████│░░░░ 60%
 
-用量 >= 90% → 红色（高位警告）
+usage >= 90% → red (high watermark)
   5h █████████│ 95%
 ```
 
-颜色逻辑：
-- **绿色** — 用量 <= 时间进度，消耗可持续
-- **黄色** — 用量略超时间进度，或用量 < 50%（低位保护，防止窗口初期误报）
-- **橙色** — 用量 > 时间进度 × 1.5
-- **红色** — 用量 >= 90%（绝对高位）
+Color rules:
+- **Green** — usage ≤ time progress; sustainable pace
+- **Yellow** — usage slightly above time progress, or usage < 50% (low-usage protection against early-window false alarms)
+- **Orange** — usage > time progress × 1.5
+- **Red** — usage ≥ 90% (absolute high watermark)
 
-### 7d 活跃时间计算
+### 7d active-time computation
 
-7d 窗口的时间标记不按自然时间（168h）计算，而是只计算**工作时段**内的活跃时间：
+The 7d window's time marker is not computed against wall-clock time (168h). Instead it counts only **working hours**:
 
-- 默认工作时段：09:00 - 22:00（每天 13 小时）
-- 7 天总活跃时间 ≈ 91 小时
-- 精确到分钟级：逐日历日计算工作时段与窗口的重叠
+- Default working window: 09:00–22:00 (13h/day)
+- 7-day total active time ≈ 91h
+- Minute-accurate: each calendar day's working window is intersected with the 7d rolling window
 
-这样时间标记更准确地反映了"在正常使用节奏下你应该消耗多少"。
+This makes the time marker reflect "at a normal usage pace, how much should I have consumed by now".
 
-### 非工作时间提醒
+### Non-working-hours warning
 
-当前时间在工作时段外（默认 22:00-09:00）时，5h 和 7d 的**进度条和百分比强制显示红色**，提醒你正在非常规时段使用。
+When the current time is outside the working window (default 22:00–09:00), the 5h and 7d bars and percentages **force red**, reminding you that you're running off-hours.
 
-## 安装
+## Install
 
-### 前置依赖
+### Requirements
 
 - bash
 - jq
-- git（可选，用于显示分支和文件变更）
-- macOS（`date -j -f` 用于时间计算）
+- git (optional, for branch and diff display)
+- macOS (`date -j -f` is used in the active-time calculation)
 
-### 配置
+### Configuration
 
-1. 复制脚本到 Claude Code 配置目录：
+1. Copy the script into your Claude Code config directory:
 
-```bash
-cp statusline.sh ~/.claude/statusline-command.sh
-```
+   ```bash
+   cp statusline.sh ~/.claude/statusline-command.sh
+   ```
 
-2. 在 `~/.claude/settings.json` 中配置状态栏：
+2. Wire it up in `~/.claude/settings.json`:
 
-```json
-{
-  "statusline": {
-    "command": "bash ~/.claude/statusline-command.sh"
-  }
-}
-```
+   ```json
+   {
+     "statusline": {
+       "command": "bash ~/.claude/statusline-command.sh"
+     }
+   }
+   ```
 
-### 环境变量
+> If you use the repo's top-level `install.sh --statusline`, both steps above happen automatically — `settings.json` ends up pointing at the script inside this repo directly (no copy needed).
 
-| 变量 | 默认值 | 说明 |
+### Environment variables
+
+| Variable | Default | Description |
 |------|--------|------|
-| `STATUSLINE_WORK_START` | `9` | 工作时段开始（小时，0-23） |
-| `STATUSLINE_WORK_END` | `22` | 工作时段结束（小时，0-23） |
+| `STATUSLINE_WORK_START` | `9` | Working window start (hour, 0–23) |
+| `STATUSLINE_WORK_END` | `22` | Working window end (hour, 0–23) |
 
-示例：调整为 8:00-21:00 工作时段：
+Example: set working hours to 8:00–21:00:
 
 ```bash
 export STATUSLINE_WORK_START=8
 export STATUSLINE_WORK_END=21
 ```
 
-## 数据来源
+## Data sources
 
-所有数据来自 Claude Code 通过 stdin 传入的 JSON，主要字段：
+All data comes from the JSON Claude Code pipes in on stdin. Key fields:
 
-| JSON 路径 | 用途 |
+| JSON path | Use |
 |-----------|------|
-| `model.display_name` | 模型名称 |
-| `workspace.current_dir` | 当前目录 |
-| `context_window.used_percentage` | 上下文用量 |
-| `context_window.context_window_size` | 上下文窗口大小 |
-| `context_window.total_input_tokens` | 累计输入 token |
-| `context_window.total_output_tokens` | 累计输出 token |
-| `cost.total_cost_usd` | 会话费用 |
-| `rate_limits.five_hour.*` | 5h 滚动窗口用量和重置时间 |
-| `rate_limits.seven_day.*` | 7d 窗口用量和重置时间 |
+| `model.display_name` | Model name |
+| `workspace.current_dir` | Current directory |
+| `context_window.used_percentage` | Context usage |
+| `context_window.context_window_size` | Context window size |
+| `context_window.total_input_tokens` | Cumulative input tokens |
+| `context_window.total_output_tokens` | Cumulative output tokens |
+| `cost.total_cost_usd` | Session cost |
+| `rate_limits.five_hour.*` | 5h rolling-window usage + reset time |
+| `rate_limits.seven_day.*` | 7d window usage + reset time |
 
-> `rate_limits` 仅在 Claude.ai Pro/Max 订阅且首次 API 响应后可用。
+> `rate_limits` is populated only on Claude.ai Pro/Max subscriptions, and only after the first API response in the session.

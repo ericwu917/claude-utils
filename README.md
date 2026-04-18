@@ -1,68 +1,68 @@
 # claude-utils
 
-个人 Claude Code 扩展积累：worktree 生命周期 hooks、双行状态栏等。
+Personal Claude Code extensions: worktree lifecycle hooks and a custom terminal statusline.
 
-> **现状**：给个人用，但每一处"踩坑点"都写成了可复用组件。欢迎拿走、改造、提 issue。
+> Small-scale personal tooling, but every "gotcha I hit" is packaged as a reusable component. Fork it, tweak it, file issues.
 >
-> **License**：MIT
+> **License**: MIT · [中文 README](README.zh.md)
 
-## 安装（30 秒，在 Claude Code 里贴一段）
+## Install — 30 seconds, paste into Claude Code
 
-打开 Claude Code，把下面这段贴进去，让 Claude 自己做完：
+Open Claude Code and paste this. Claude does the rest.
 
-> 帮我装 claude-utils：
-> 1. 跑 `git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils`
-> 2. 跑 `~/.claude/claude-utils/install.sh --all`
-> 3. 如果 install.sh 报了 "Conflict" 或 "jq is required"，读 `~/.claude/claude-utils/docs/SETTINGS_MERGE.md` 帮我手动合并 `~/.claude/settings.json`（合并前备份）
-> 4. 装完告诉我需要重启 Claude Code 会话（或运行 `/hooks` 重载）hooks 才生效
+> Install claude-utils:
+> 1. Run `git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils`
+> 2. Run `~/.claude/claude-utils/install.sh --all`
+> 3. If the install script reports `Conflict` or `jq is required`, read `~/.claude/claude-utils/docs/SETTINGS_MERGE.md` and help me merge `~/.claude/settings.json` manually (create a timestamped backup first).
+> 4. When install is done, tell me to restart the Claude Code session (or run `/hooks`) for hooks to take effect.
 
-### 或：手动安装
+### Or install manually
 
 ```bash
 git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils
-~/.claude/claude-utils/install.sh --all         # 默认装 hooks + statusline
-~/.claude/claude-utils/install.sh --hooks       # 只装 hooks
-~/.claude/claude-utils/install.sh --statusline  # 只装 statusline
-~/.claude/claude-utils/install.sh --dry-run     # 只看 diff 不写
+~/.claude/claude-utils/install.sh --all         # default: hooks + statusline
+~/.claude/claude-utils/install.sh --hooks       # hooks only
+~/.claude/claude-utils/install.sh --statusline  # statusline only
+~/.claude/claude-utils/install.sh --dry-run     # show the diff, don't write
 ```
 
-- 依赖：`bash`、`jq`、`git`（statusline 还需要 macOS `date -j -f`）
-- `install.sh` 直接让 `settings.json` 里的路径**指向仓库本地文件**（不拷贝）。以后 `git pull` 即升级，不用重跑 install
-- 写 `settings.json` 前自动备份到 `settings.json.bak.<timestamp>`
-- 幂等：重复跑只会把自己的条目替换成最新路径，不会重复注册；遇到冲突（用户已有非 claude-utils 的同槽位配置）会打印警告并跳过，不覆盖
+- Requires `bash`, `jq`, `git` (the statusline additionally uses macOS `date -j -f`).
+- `install.sh` points `settings.json` **directly at scripts in the repo**, no copying. `git pull` in the clone directory upgrades in place — no need to rerun install.
+- Before writing, the script backs up your existing settings to `settings.json.bak.<timestamp>`.
+- Idempotent: reruns just refresh claude-utils' own entries with the current path. If a slot already holds a non-claude-utils entry, the script warns and skips — **your config is never overwritten**.
 
-## 组件
+## Components
 
 ### hooks/worktree-create.sh — `WorktreeCreate`
 
-按前缀自动选 base branch 并注入日期戳：
+Prefix-driven base branch selection, plus a date stamp:
 
-| 输入 name | 实际 branch | base |
+| Input `name` | Branch | Base |
 |---|---|---|
 | `feat/<rest>` | `feat/YYMMDD-<rest>` | `origin/develop` |
 | `hotfix/<rest>` | `hotfix/YYMMDD-<rest>` | `origin/master` |
-| 其他 | `worktree-<name>` | `origin/HEAD`（fallback） |
+| anything else | `worktree-<name>` | `origin/HEAD` (fallback) |
 
-示例：`claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s2`，worktree 路径 `<repo>/.claude/worktrees/feat/260418-kill-mutants-s2/`。Base 不存在时自动回退到 `origin/HEAD`，保证脚本在不走 git-flow 的项目里也能用。
+Example: `claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s2`, worktree at `<repo>/.claude/worktrees/feat/260418-kill-mutants-s2/`. If the expected base is missing (e.g. the repo has no `origin/develop`), the hook falls back to `origin/HEAD` — so it stays useful in projects that don't follow git-flow.
 
 ### hooks/worktree-remove.sh — `WorktreeRemove`
 
-配对清理。`git worktree remove`（**不带 `--force`**，dirty worktree 会保留）+ `git branch -D` + 清理空父目录。CC 调用此 hook 时 cwd 就是被删的 worktree 本身，所以脚本内部所有 git 写操作都通过 `git -C "$MAIN_REPO"` 从主 repo 上下文执行。
+Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty worktrees are preserved) + `git branch -D` + empty-parent-directory cleanup. Because CC invokes this hook with cwd set to the worktree being removed, every destructive git op is routed through `git -C "$MAIN_REPO"` — git refuses to self-delete its cwd or a checked-out branch, so the hook does the work from the main repo instead.
 
-### statusline/statusline.sh — 双行状态栏
+### statusline/statusline.sh — dual-line statusline
 
-第一行：模型、目录、git 分支 + diff、token 吞吐、费用。
-第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续）。
+Line 1: model, directory, git branch + diff, token throughput, cost.
+Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable.
 
-详见 [`statusline/README.md`](statusline/README.md)。
+Full details: [`statusline/README.md`](statusline/README.md).
 
-## 架构
+## Architecture
 
-| 位置 | 角色 |
+| Location | Role |
 |---|---|
-| 本仓库（建议克隆到 `~/.claude/claude-utils`） | **源码 + 运行时**：`settings.json` 直接引用这里的脚本 |
-| `~/.claude/settings.json` | CC 的配置，由 `install.sh` 幂等合并 |
-| `~/.claude/worktree-hook.log` | 两个 hook 的 stdin JSON 日志，排查问题用 |
+| This repo (recommend cloning to `~/.claude/claude-utils/`) | **Source + runtime** — `settings.json` references scripts here directly |
+| `~/.claude/settings.json` | CC's config; `install.sh` merges entries idempotently |
+| `~/.claude/worktree-hook.log` | stdin JSON of every hook invocation — first stop when debugging |
 
 ```
 claude-utils/
@@ -73,30 +73,30 @@ claude-utils/
 │   ├── statusline.sh
 │   └── README.md
 ├── docs/
-│   └── SETTINGS_MERGE.md      # 冲突时手动合并指南
+│   └── SETTINGS_MERGE.md      # manual-merge guide for conflict cases
 ├── install.sh
 ├── CHANGELOG.md
 ├── LICENSE
-├── CLAUDE.md                   # 给 Claude Code 看的仓库说明
+├── CLAUDE.md                   # repo notes for Claude Code instances
 └── README.md
 ```
 
-## 踩坑记录（写 hook 时值得记住）
+## Pitfalls worth knowing before you write your own hooks
 
-- **Create hook 的 stdin**：`name` 字段在**顶层** `.name`，不在 `.tool_input.name`
-- **Remove hook 的 stdin**：`.worktree_path`（snake_case），不是 `.path` / `.worktreePath`
-- **Remove hook 的 cwd 陷阱**：CC 从被删 worktree 内部调用，直接跑 git 会尝试自删 cwd / 自删 checked-out branch，都会被 git 硬拦。必须 `git -C <主 repo>`
-- **WorktreeCreate 不配 WorktreeRemove 的后果**：CC 默认清理不跑了，干净 worktree 也不会自动删（官方文档未明说，实测确认）
+- **`WorktreeCreate` stdin**: the worktree name is at top-level `.name`, **not** `.tool_input.name`.
+- **`WorktreeRemove` stdin**: the path field is `.worktree_path` (snake_case), not `.path` / `.worktreePath`.
+- **`WorktreeRemove` cwd trap**: CC invokes the hook from inside the worktree being removed. `git worktree remove` and `git branch -D` both fail from that cwd because git refuses to self-delete its cwd or a checked-out branch. Use `git -C <main-repo>`.
+- **Pairing requirement**: if you configure `WorktreeCreate`, you **must** also configure `WorktreeRemove`. CC's built-in cleanup does not run on `/exit` once a custom `WorktreeCreate` is set — even a clean worktree won't auto-remove. Undocumented but reproducible.
 
 ## Roadmap
 
-- [x] `install.sh` + paste-prompt 一键装
+- [x] `install.sh` + paste-prompt one-shot install
+- [x] English README
 - [ ] `uninstall.sh` / `install.sh --update`
 - [ ] shellcheck + shfmt CI
-- [ ] 英文 README
 
-PR / issue welcome。
+PRs and issues welcome.
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT — see [LICENSE](LICENSE).

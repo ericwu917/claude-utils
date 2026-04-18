@@ -1,15 +1,17 @@
-# settings.json 手动合并指南
+# Manual settings.json merge guide
 
-`install.sh` 在两种情况下会退出并要求人工介入：
+`install.sh` exits and asks for human intervention in two cases:
 
-1. **jq 未安装** —— 合并需要 jq，自动流程无法继续
-2. **检测到冲突** —— `~/.claude/settings.json` 里某个事件槽位（`WorktreeCreate` / `WorktreeRemove` / `statusline.command`）已经有了非 claude-utils 的配置，脚本不敢覆盖
+1. **`jq` is not installed** — the merge needs jq; the automated flow can't continue.
+2. **Conflict detected** — `~/.claude/settings.json` already has a non-claude-utils entry in one of the slots (`WorktreeCreate` / `WorktreeRemove` / `statusline.command`) and the script refuses to overwrite.
 
-本文档告诉你要插入什么、或者如何把这份文档喂给 Claude 让它帮你改。
+This document tells you what entries to insert — or how to hand this document to Claude and have it do the merge for you.
 
-## 目标状态
+[中文版](SETTINGS_MERGE.zh.md)
 
-合并完成后，`~/.claude/settings.json` 必须包含以下字段（已有字段保留、同名字段合并）。将所有 `<REPO>` 替换为 `install.sh` 所在仓库的绝对路径（通常是 `$HOME/.claude/claude-utils`）。
+## Target state
+
+After merging, `~/.claude/settings.json` must contain the fields below (preserve any other existing fields; merge same-named fields). Replace every `<REPO>` with the absolute path to the repo that contains `install.sh` (typically `$HOME/.claude/claude-utils`).
 
 ```json
 {
@@ -43,30 +45,30 @@
 }
 ```
 
-## 合并规则
+## Merge rules
 
-- **`hooks.WorktreeCreate` / `WorktreeRemove`**：如果这两个事件槽位是空的，直接把上面的条目数组放进去。如果用户已经有其他 hook 并排运行，把新条目**追加**到数组末尾即可（CC 会顺序触发所有）。不要删除用户原有条目。
-- **`statusline.command`**：这是**单值字段**。如果用户已设置为别的脚本，请和用户确认：是覆盖、还是不安装 statusline（本组件可跳过，hooks 照样能装）。
+- **`hooks.WorktreeCreate` / `WorktreeRemove`**: if these event slots are empty, drop the array entries above in directly. If the user already has other hooks wired to the same event, **append** the new entry to the array — CC fires all entries in order. Do not remove any of the user's existing entries.
+- **`statusline.command`**: this is a **single-value** field. If the user already has a different statusline script configured, ask before replacing. If they want to keep theirs, skip the statusline component; the hooks will still install.
 
-## 操作步骤（手动）
+## Manual procedure
 
-1. **先备份**：
+1. **Back up first**:
    ```bash
    cp ~/.claude/settings.json ~/.claude/settings.json.bak.$(date +%Y%m%d-%H%M%S)
    ```
-2. 用你习惯的编辑器按上面"目标状态"节的片段合并
-3. 校验 JSON：
+2. Merge the snippets above with your editor of choice.
+3. Validate the JSON:
    ```bash
    jq empty ~/.claude/settings.json
    ```
-4. 重启 Claude Code session（或 `/hooks` 重载）
+4. Restart the Claude Code session (or run `/hooks` to reload).
 
-## 操作步骤（让 Claude 代劳）
+## Let Claude do it
 
-如果 `install.sh` 报了冲突，在 Claude Code 里把下面这段贴进来：
+If `install.sh` reports a conflict, paste this into Claude Code:
 
-> 读 `~/.claude/claude-utils/docs/SETTINGS_MERGE.md`，然后帮我把必要条目合并进 `~/.claude/settings.json`。合并前务必先备份到 `settings.json.bak.<timestamp>`。冲突字段请先告诉我再动。`<REPO>` 用 `~/.claude/claude-utils`（如果我把仓库克隆到别处了我会告诉你）。
+> Read `~/.claude/claude-utils/docs/SETTINGS_MERGE.md`, then merge the required entries into `~/.claude/settings.json`. Back up to `settings.json.bak.<timestamp>` before writing. If any field conflicts with something I already have, tell me first. Use `~/.claude/claude-utils` for `<REPO>` (I'll tell you if I cloned it somewhere else).
 
-## 卸载
+## Uninstall
 
-手动删除上面列出的对应字段（`hooks.WorktreeCreate`、`hooks.WorktreeRemove`、`statusline.command`），然后 `rm -rf` 仓库目录。现阶段暂无 `uninstall.sh`。
+Manually delete the fields listed under "Target state" (`hooks.WorktreeCreate`, `hooks.WorktreeRemove`, `statusline.command`), then `rm -rf` the repo directory. An `uninstall.sh` is on the roadmap.

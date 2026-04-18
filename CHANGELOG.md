@@ -9,6 +9,12 @@ schema shifts) may land in minor versions.
 
 ## [Unreleased]
 
+### Changed
+- Documentation switched to English-primary. The former Chinese `README.md`,
+  `statusline/README.md`, and `docs/SETTINGS_MERGE.md` now live at
+  `README.zh.md`, `statusline/README.zh.md`, and `docs/SETTINGS_MERGE.zh.md`
+  respectively. Each version links to the other at the top.
+
 ## [0.1.0] - 2026-04-18
 
 ### Added
