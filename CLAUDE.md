@@ -4,14 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库定位
 
-这是用户 Claude Code 扩展的**源码仓库**，目前包含 `hooks/`（worktree 生命周期钩子）和 `statusline/`（自定义状态栏脚本），未来还会有 skills/agents。CC 运行时并不从这里加载，而是从 `~/.claude/` 加载。因此任何改动都需要拷贝到 `~/.claude/` 才能生效：
+这是用户 Claude Code 扩展的**源码 + 运行时仓库**，目前包含 `hooks/`（worktree 生命周期钩子）和 `statusline/`（自定义状态栏脚本），未来还会有 skills/agents。
 
+**重要的模型变化**：v0.1.0 之后，`~/.claude/settings.json` 里的路径**直接指向本仓库的工作树**（通常克隆在 `~/.claude/claude-utils/`），不再 `cp` 到 `~/.claude/hooks/`。`git pull` 就是升级，不用重跑 install；只有 `settings.json` schema 变化时才需要再跑一次 `install.sh`。
+
+安装入口：
 ```bash
-cp hooks/*.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/*.sh
-cp statusline/statusline.sh ~/.claude/statusline-command.sh
+./install.sh --all              # 幂等合并到 ~/.claude/settings.json（jq 驱动，写前备份）
+./install.sh --dry-run          # 看 diff 不写
 ```
 
-目前没有 `install.sh`，安装靠手动 `cp`。`~/.claude/settings.json` 引用的是 `$HOME/.claude/...` 路径，绝不直接指向本工作树。拷贝完成后需重启 CC session 或跑 `/hooks` 重载（hooks 生效）；statusline 脚本是每次渲染前拉起的子进程，改完立即生效。
+脚本行为要点：
+- 依赖 `jq`；缺了会 exit 2 并指向 `docs/SETTINGS_MERGE.md`
+- 写之前备份到 `~/.claude/settings.json.bak.<timestamp>`
+- **冲突检测走 basename 匹配**：`hooks.WorktreeCreate[].hooks[].command` 以 `/worktree-create.sh` 结尾的被视为"我们的"，覆盖；其他一律判为冲突，跳过不动，提示用户看 `docs/SETTINGS_MERGE.md`
+- `statusline.command` 冲突检测靠路径 substring `/statusline/statusline.sh`
+
+改动立即生效性：hooks 需要重启 CC session 或 `/hooks` 重载；statusline 是每次渲染前拉起的子进程，改完立即生效。
 
 ## Hook 契约（非显而易见）
 

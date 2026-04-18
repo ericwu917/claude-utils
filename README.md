@@ -1,40 +1,41 @@
 # claude-utils
 
-个人 Claude Code 扩展积累：hooks、skills、agents 等，统一在此仓库迭代，通过"安装"拷贝到 `~/.claude/` 供 CC 运行时加载。
+个人 Claude Code 扩展积累：worktree 生命周期 hooks、双行状态栏等。
 
-## 架构
+> **现状**：给个人用，但每一处"踩坑点"都写成了可复用组件。欢迎拿走、改造、提 issue。
+>
+> **License**：MIT
 
-| 位置 | 角色 |
-|---|---|
-| `claude-utils/` (本仓库) | **源码**：编辑、版本管理都在这里 |
-| `~/.claude/` | **安装目录**：CC 启动时实际加载的位置 |
-| `~/.claude/settings.json` | 引用 `$HOME/.claude/...` 路径，不直接指向源码工作树 |
+## 安装（30 秒，在 Claude Code 里贴一段）
 
-**安装方式**：目前手动 `cp`，后续加 `install.sh` 封装。
+打开 Claude Code，把下面这段贴进去，让 Claude 自己做完：
 
-## 目录结构
+> 帮我装 claude-utils：
+> 1. 跑 `git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils`
+> 2. 跑 `~/.claude/claude-utils/install.sh --all`
+> 3. 如果 install.sh 报了 "Conflict" 或 "jq is required"，读 `~/.claude/claude-utils/docs/SETTINGS_MERGE.md` 帮我手动合并 `~/.claude/settings.json`（合并前备份）
+> 4. 装完告诉我需要重启 Claude Code 会话（或运行 `/hooks` 重载）hooks 才生效
 
+### 或：手动安装
+
+```bash
+git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils
+~/.claude/claude-utils/install.sh --all         # 默认装 hooks + statusline
+~/.claude/claude-utils/install.sh --hooks       # 只装 hooks
+~/.claude/claude-utils/install.sh --statusline  # 只装 statusline
+~/.claude/claude-utils/install.sh --dry-run     # 只看 diff 不写
 ```
-claude-utils/
-├── hooks/                      # Claude Code hooks (Pre/Post/Worktree* 等事件)
-│   ├── worktree-create.sh
-│   └── worktree-remove.sh
-├── statusline/                 # 自定义状态栏脚本
-│   ├── statusline.sh
-│   └── README.md
-└── README.md
-```
 
-未来会陆续加入：
-- `skills/` — 自定义 skills
-- `agents/` — 自定义 sub-agents
-- `install.sh` — 统一安装入口
+- 依赖：`bash`、`jq`、`git`（statusline 还需要 macOS `date -j -f`）
+- `install.sh` 直接让 `settings.json` 里的路径**指向仓库本地文件**（不拷贝）。以后 `git pull` 即升级，不用重跑 install
+- 写 `settings.json` 前自动备份到 `settings.json.bak.<timestamp>`
+- 幂等：重复跑只会把自己的条目替换成最新路径，不会重复注册；遇到冲突（用户已有非 claude-utils 的同槽位配置）会打印警告并跳过，不覆盖
 
-## 当前内容
+## 组件
 
-### hooks/worktree-create.sh — `WorktreeCreate` hook
+### hooks/worktree-create.sh — `WorktreeCreate`
 
-接管 CC 默认的 `git worktree add` 逻辑，按命名约定自动选 base branch 并注入日期戳：
+按前缀自动选 base branch 并注入日期戳：
 
 | 输入 name | 实际 branch | base |
 |---|---|---|
@@ -42,69 +43,60 @@ claude-utils/
 | `hotfix/<rest>` | `hotfix/YYMMDD-<rest>` | `origin/master` |
 | 其他 | `worktree-<name>` | `origin/HEAD`（fallback） |
 
-示例：`claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s2`，worktree 路径 `.claude/worktrees/feat/260418-kill-mutants-s2/`。
+示例：`claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s2`，worktree 路径 `<repo>/.claude/worktrees/feat/260418-kill-mutants-s2/`。Base 不存在时自动回退到 `origin/HEAD`，保证脚本在不走 git-flow 的项目里也能用。
 
-Hook 流程：
-1. 从 stdin 解析 `.name`（多路径探测兼容未来字段变化）
-2. 前缀匹配 → 决定 base
-3. `git fetch origin`
-4. `git worktree add -b <branch> <path> <base>`
-5. stdout 打印绝对路径（CC 据此 chdir 进去）
+### hooks/worktree-remove.sh — `WorktreeRemove`
 
-### hooks/worktree-remove.sh — `WorktreeRemove` hook
+配对清理。`git worktree remove`（**不带 `--force`**，dirty worktree 会保留）+ `git branch -D` + 清理空父目录。CC 调用此 hook 时 cwd 就是被删的 worktree 本身，所以脚本内部所有 git 写操作都通过 `git -C "$MAIN_REPO"` 从主 repo 上下文执行。
 
-配对清理逻辑。配 `WorktreeCreate` 后必须配 `WorktreeRemove`，否则 CC 的默认清理在 `/exit` 时不会触发（实测确认）。
+### statusline/statusline.sh — 双行状态栏
 
-行为：
-1. 从 stdin 解析 `.worktree_path`（CC 实际字段，snake_case）
-2. 注意 CC 调用时 cwd 就是被删的 worktree 本身 → 所有 git 写操作必须通过 `git -C "$MAIN_REPO"` 从主 repo 上下文执行
-3. `git worktree remove <path>`（**不带 `--force`**：dirty worktree 保留）
-4. `git branch -D <branch>`
-5. `rmdir` 空的父目录（只在严格子孙于 `.claude/worktrees/` 时，用 `rmdir` 保证非空不删）
+第一行：模型、目录、git 分支 + diff、token 吞吐、费用。
+第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续）。
 
-### statusline/statusline.sh — 自定义状态栏
+详见 [`statusline/README.md`](statusline/README.md)。
 
-双行终端状态栏：第一行工作环境（模型、目录、git 分支、diff、token、费用），第二行配额（上下文窗口 + 5h/7d 速率限制进度条，叠加时间进度标记）。详见 `statusline/README.md`。
+## 架构
 
-安装：
+| 位置 | 角色 |
+|---|---|
+| 本仓库（建议克隆到 `~/.claude/claude-utils`） | **源码 + 运行时**：`settings.json` 直接引用这里的脚本 |
+| `~/.claude/settings.json` | CC 的配置，由 `install.sh` 幂等合并 |
+| `~/.claude/worktree-hook.log` | 两个 hook 的 stdin JSON 日志，排查问题用 |
 
-```bash
-cp statusline/statusline.sh ~/.claude/statusline-command.sh
+```
+claude-utils/
+├── hooks/
+│   ├── worktree-create.sh
+│   └── worktree-remove.sh
+├── statusline/
+│   ├── statusline.sh
+│   └── README.md
+├── docs/
+│   └── SETTINGS_MERGE.md      # 冲突时手动合并指南
+├── install.sh
+├── CHANGELOG.md
+├── LICENSE
+├── CLAUDE.md                   # 给 Claude Code 看的仓库说明
+└── README.md
 ```
 
-并在 `~/.claude/settings.json` 配置 `statusline.command` 指向它。
+## 踩坑记录（写 hook 时值得记住）
 
-### Hook 日志
+- **Create hook 的 stdin**：`name` 字段在**顶层** `.name`，不在 `.tool_input.name`
+- **Remove hook 的 stdin**：`.worktree_path`（snake_case），不是 `.path` / `.worktreePath`
+- **Remove hook 的 cwd 陷阱**：CC 从被删 worktree 内部调用，直接跑 git 会尝试自删 cwd / 自删 checked-out branch，都会被 git 硬拦。必须 `git -C <主 repo>`
+- **WorktreeCreate 不配 WorktreeRemove 的后果**：CC 默认清理不跑了，干净 worktree 也不会自动删（官方文档未明说，实测确认）
 
-两个 hook 都把 stdin JSON 追加到 `~/.claude/worktree-hook.log`，排查问题时先看这个。
+## Roadmap
 
-## 安装（当前）
+- [x] `install.sh` + paste-prompt 一键装
+- [ ] `uninstall.sh` / `install.sh --update`
+- [ ] shellcheck + shfmt CI
+- [ ] 英文 README
 
-```bash
-cp hooks/*.sh ~/.claude/hooks/
-chmod +x ~/.claude/hooks/*.sh
-```
+PR / issue welcome。
 
-并在 `~/.claude/settings.json` 加：
+## License
 
-```json
-{
-  "hooks": {
-    "WorktreeCreate": [
-      { "hooks": [ { "type": "command", "command": "\"$HOME/.claude/hooks/worktree-create.sh\"", "timeout": 120 } ] }
-    ],
-    "WorktreeRemove": [
-      { "hooks": [ { "type": "command", "command": "\"$HOME/.claude/hooks/worktree-remove.sh\"", "timeout": 60 } ] }
-    ]
-  }
-}
-```
-
-重启 Claude Code session（或 `/hooks` 重载）后生效。
-
-## 相关踩坑记录（写 hook 时值得记住）
-
-- **Create hook 的 stdin**：`name` 字段在顶层，不在 `tool_input.name`
-- **Remove hook 的 stdin**：`worktree_path`（snake_case），不是 `.path` / `.worktreePath`
-- **Remove hook 的 cwd 陷阱**：CC 从被删 worktree 内部调用，直接跑 git 会尝试自删 cwd / 自删 checked-out branch，都会被 git 硬拦
-- **WorktreeCreate 不配 WorktreeRemove 的后果**：CC 默认清理不会跑，干净 worktree 也不会自动删（官方文档未明说，实测确认）
+MIT，见 [LICENSE](LICENSE)。
