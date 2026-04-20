@@ -10,6 +10,18 @@ schema shifts) may land in minor versions.
 ## [Unreleased]
 
 ### Fixed
+- `hooks/worktree-remove.sh`: surface the real failure reason when
+  `git worktree remove` is refused (typically: dirty/untracked files such
+  as `venv/` or `node_modules/`). Previously the hook echoed a generic
+  "likely dirty" message to stderr only and `exit 0`'d, so Claude Code
+  saw it as success and the user got no indication the worktree was
+  preserved. Now the hook captures git's actual stderr ("fatal: '...'
+  contains modified or untracked files, use --force to delete it"), echoes
+  it verbatim plus a force-delete hint, writes it to
+  `~/.claude/worktree-hook.log`, and `exit 1`s so CC shows the failure.
+  Successful removes also log a confirmation line. Never auto-`--force`:
+  preserving dirty worktrees is the intended safety behavior; only the
+  silent-ignore was the bug.
 - `hooks/worktree-create.sh`: strip a leading `worktree-` prefix on the
   plain (non-`feat/`, non-`hotfix/`) case so `claude -w worktree-foo` (a
   branch name pasted from `git branch`) resolves to the same worktree as
