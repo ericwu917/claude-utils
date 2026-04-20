@@ -9,6 +9,14 @@ schema shifts) may land in minor versions.
 
 ## [Unreleased]
 
+### Added
+- `statusline/statusline.sh`: line-1 directory name is now a cmd/modifier+click
+  hyperlink that opens the folder in Finder. Implemented via an OSC 8 escape
+  (`file://` URL) around `DIR_NAME`; unsupported terminals (Terminal.app)
+  silently ignore it. Uses BEL as the OSC terminator so `echo -e` doesn't
+  interpret `\033\\<text>` as a `\c` stop-output sequence and truncate the
+  rest of the line.
+
 ### Fixed
 - `hooks/worktree-remove.sh`: surface the real failure reason when
   `git worktree remove` is refused (typically: dirty/untracked files such
