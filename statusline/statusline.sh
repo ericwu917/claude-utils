@@ -289,8 +289,18 @@ DIFF_ADD=$(echo "$SHORTSTAT" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')
 DIFF_DEL=$(echo "$SHORTSTAT" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')
 FILE_COUNT=${FILE_COUNT:-0}; DIFF_ADD=${DIFF_ADD:-0}; DIFF_DEL=${DIFF_DEL:-0}
 
+# OSC 8 hyperlink: cmd/modifier+click in supporting terminals (iTerm2, Ghostty,
+# WezTerm, Kitty, ...) opens DIR in Finder via the file:// URL. Terminals that
+# don't understand OSC 8 (Terminal.app) silently ignore it.
+# Use BEL (\a) as the OSC terminator — widely accepted and safe with `echo -e`,
+# which would otherwise interpret `\033\\<text>` containing a "\c" stop-output
+# sequence and truncate the rest of the status line.
+# URL-encode spaces; other special chars in paths are rare enough to skip.
+DIR_URL="file://${DIR// /%20}"
+DIR_LINK="\033]8;;${DIR_URL}\a${DIR_NAME}\033]8;;\a"
+
 # Build two lines
-LINE1="${CYAN}[${MODEL}]${RESET} 📁 ${DIR_NAME}"
+LINE1="${CYAN}[${MODEL}]${RESET} 📁 ${DIR_LINK}"
 [ -n "$BRANCH" ] && LINE1="${LINE1} ${DIM}|${RESET} 🔀 ${GREEN}${BRANCH}${RESET}"
 LINE1="${LINE1} ${DIM}|${RESET} ${FILE_COUNT} files ${GREEN}+${DIFF_ADD}${RESET} ${RED}-${DIFF_DEL}${RESET}"
 LINE1="${LINE1} ${DIM}|${RESET} ${DIM}↑${SEND_FMT} ↓${RECV_FMT}${RESET}"
