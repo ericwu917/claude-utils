@@ -10,6 +10,10 @@
 #     hotfix/<rest>  hotfix/<YYMMDD>-<rest> (master)   hotfix/<YYMMDD>-<rest>/
 #     <other>        worktree-<name>        (HEAD)     <name>/    (matches CC default)
 #
+#   Input normalization: a leading `worktree-` prefix on the plain case is
+#   stripped so `claude -w worktree-foo` (a branch name pasted from
+#   `git branch`) resolves to the same worktree as `claude -w foo`.
+#
 #   Reuse semantics (#3):
 #     - A matching feat/*-<rest> (or hotfix/*-<rest>) branch from any day is
 #       reused in preference to stamping today's date on a new branch.
@@ -151,6 +155,14 @@ case "$NAME" in
     BASE="origin/master"
     ;;
   *)
+    # If the user pasted a branch name that already has our `worktree-`
+    # prefix (easy to do — `git branch` lists them that way), strip it so
+    # we don't stack prefixes into `worktree-worktree-<x>`. Require at
+    # least one char after the prefix so bare `worktree-` still fails loudly.
+    if [[ "$NAME" == worktree-?* ]]; then
+      log "normalizing input $NAME -> ${NAME#worktree-} (prefix already present)"
+      NAME="${NAME#worktree-}"
+    fi
     BRANCH="worktree-${NAME}"
     # Align plain-name path with Claude Code's own -w default layout
     # (.claude/worktrees/<name>/). The worktree- prefix is kept on the

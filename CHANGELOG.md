@@ -10,6 +10,11 @@ schema shifts) may land in minor versions.
 ## [Unreleased]
 
 ### Fixed
+- `hooks/worktree-create.sh`: strip a leading `worktree-` prefix on the
+  plain (non-`feat/`, non-`hotfix/`) case so `claude -w worktree-foo` (a
+  branch name pasted from `git branch`) resolves to the same worktree as
+  `claude -w foo` instead of creating a second, double-prefixed
+  `worktree-worktree-foo` branch at `.claude/worktrees/worktree-foo/`.
 - `hooks/worktree-create.sh`: re-entering an existing worktree name no longer
   aborts with `fatal: a branch named '...' already exists`. The hook now
   detects worktree/branch state and either re-uses the standard-path
