@@ -55,7 +55,7 @@ Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty work
 
 ### statusline/statusline.sh — dual-line statusline
 
-Line 1: model, directory, git branch + diff, token throughput, cost.
+Line 1: model, directory, git branch + diff, cache hit rate, cost / API time / wall time.
 Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable.
 
 Full details: [`statusline/README.md`](statusline/README.md).

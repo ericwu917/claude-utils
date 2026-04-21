@@ -20,8 +20,8 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 | `📁 project` | Project directory name |
 | `🔀 master` | Git branch |
 | `3 files +25 -10` | Uncommitted file changes (`git diff --shortstat HEAD`) |
-| `↑50k ↓20k` | Cumulative input/output tokens this session |
-| `$0.50` | Cumulative session cost |
+| `💾 95%` | Prompt cache hit rate for the **last** API call |
+| `$0.50 / 4h10m / 1d2h` | Session cost **/** cumulative API wait time **/** wall-clock time. Compact duration format: `<24h` → `XhYm`, `≥24h` → `XdYh` (minute precision; same formatter drives the `5h`/`7d` countdowns). |
 
 ### Line 2 — quota status
 
@@ -53,6 +53,29 @@ Color rules:
 - **Yellow** — usage slightly above time progress, or usage < 50% (low-usage protection against early-window false alarms)
 - **Orange** — usage > time progress × 1.5
 - **Red** — usage ≥ 90% (absolute high watermark)
+
+### Prompt cache hit rate
+
+`💾 XX%` shows what fraction of the most recent API call's input tokens were served from the prompt cache:
+
+```
+hit% = cache_read_input_tokens / (input_tokens + cache_creation_input_tokens + cache_read_input_tokens)
+```
+
+All three fields live under `context_window.current_usage` (which is `null` before the session's first API call → displayed as `💾 --`).
+
+Because only `current_usage` is exposed (not cumulative cache totals), this reflects **one turn**, not session-wide. A single low-hit turn isn't a problem — watch for several low turns in a row.
+
+Thresholds (calibrated against observed Claude Code steady state, **not an Anthropic-published target** — the docs intentionally avoid prescribing a number):
+
+| Hit% | Color | Reading |
+|---|---|---|
+| ≥ 95% | 🟢 green | healthy steady state (typical CC long-session value) |
+| 80–95% | 🟡 yellow | normal fluctuation — this turn absorbed a big new chunk (file read, large tool output) |
+| 50–80% | 🟠 orange | something is systematically evicting the cache |
+| < 50% | 🔴 red | first turn / `/clear` just ran / >5min idle / cache genuinely broken |
+
+Things that break the cache mid-session: editing `CLAUDE.md` / `settings.json` / hooks, loading or unloading an MCP server, switching model or permission mode, frequent `/clear`, spawning many sub-agents (each starts cold), leaving the session idle for >5 minutes (Anthropic's default cache TTL).
 
 ### 7d active-time computation
 
@@ -121,9 +144,14 @@ All data comes from the JSON Claude Code pipes in on stdin. Key fields:
 | `workspace.current_dir` | Current directory |
 | `context_window.used_percentage` | Context usage |
 | `context_window.context_window_size` | Context window size |
-| `context_window.total_input_tokens` | Cumulative input tokens |
-| `context_window.total_output_tokens` | Cumulative output tokens |
-| `cost.total_cost_usd` | Session cost |
+| `context_window.total_input_tokens` | Cumulative input tokens (parsed but not displayed by default; re-enable the `↑${SEND_FMT} ↓${RECV_FMT}` line in `statusline.sh` to show) |
+| `context_window.total_output_tokens` | Cumulative output tokens (same as above) |
+| `context_window.current_usage.input_tokens` | Last-call non-cached input tokens (cache hit % numerator input) |
+| `context_window.current_usage.cache_creation_input_tokens` | Last-call tokens written to cache |
+| `context_window.current_usage.cache_read_input_tokens` | Last-call tokens read from cache |
+| `cost.total_cost_usd` | Session cost (estimate; not a bill for Pro/Max subscribers) |
+| `cost.total_api_duration_ms` | Cumulative time spent waiting on the API this session |
+| `cost.total_duration_ms` | Session wall-clock time |
 | `rate_limits.five_hour.*` | 5h rolling-window usage + reset time |
 | `rate_limits.seven_day.*` | 7d window usage + reset time |
 

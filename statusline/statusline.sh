@@ -17,10 +17,14 @@ eval "$(echo "$input" | jq -r '
   @sh "DIR=\(.workspace.current_dir // ".")",
   @sh "COST=\(.cost.total_cost_usd // 0)",
   @sh "DURATION_MS=\(.cost.total_duration_ms // 0)",
+  @sh "API_DURATION_MS=\(.cost.total_api_duration_ms // 0)",
   @sh "PCT=\(.context_window.used_percentage // 0 | round)",
   @sh "CTX_SIZE=\(.context_window.context_window_size // 200000)",
   @sh "INPUT_TOKENS=\(.context_window.total_input_tokens // 0)",
   @sh "OUTPUT_TOKENS=\(.context_window.total_output_tokens // 0)",
+  @sh "CUR_INPUT=\(.context_window.current_usage.input_tokens // 0)",
+  @sh "CUR_CACHE_CREATE=\(.context_window.current_usage.cache_creation_input_tokens // 0)",
+  @sh "CUR_CACHE_READ=\(.context_window.current_usage.cache_read_input_tokens // 0)",
   @sh "FIVE_H_PCT=\(.rate_limits.five_hour.used_percentage // empty)",
   @sh "FIVE_H_RESET=\(.rate_limits.five_hour.resets_at // empty)",
   @sh "SEVEN_D_PCT=\(.rate_limits.seven_day.used_percentage // empty)",
@@ -36,7 +40,8 @@ WORK_HOURS=$((WORK_END - WORK_START))
 # Integer guards
 PCT=${PCT:-0}; CTX_SIZE=${CTX_SIZE:-200000}
 INPUT_TOKENS=${INPUT_TOKENS:-0}; OUTPUT_TOKENS=${OUTPUT_TOKENS:-0}
-COST=${COST:-0}; DURATION_MS=${DURATION_MS:-0}
+CUR_INPUT=${CUR_INPUT:-0}; CUR_CACHE_CREATE=${CUR_CACHE_CREATE:-0}; CUR_CACHE_READ=${CUR_CACHE_READ:-0}
+COST=${COST:-0}; DURATION_MS=${DURATION_MS:-0}; API_DURATION_MS=${API_DURATION_MS:-0}
 
 # Format token counts
 fmt_tokens() {
@@ -116,27 +121,28 @@ make_rate_bar() {
     echo "${color}${before}${RESET}${DIM}│${RESET}${color}${after}${RESET}"
 }
 
-# Format remaining time from epoch: fmt_remaining <epoch>
+# Compact duration formatter (minute precision, two tiers):
+#   >=24h → XdYh   (e.g. 1d10h)
+#    <24h → XhYm   (e.g. 4h10m, 0h5m)
+fmt_duration_compact() {
+    local sec=$1
+    [ "$sec" -lt 0 ] && sec=0
+    local days=$((sec / 86400))
+    if [ "$days" -ge 1 ]; then
+        local hours=$(( (sec % 86400) / 3600 ))
+        echo "${days}d${hours}h"
+    else
+        local hours=$((sec / 3600))
+        local mins=$(( (sec % 3600) / 60 ))
+        echo "${hours}h${mins}m"
+    fi
+}
+
+# Epoch → "time remaining" (thin wrapper, bails on empty input).
 fmt_remaining() {
     local epoch=$1
     [ -z "$epoch" ] && return
-    local now remaining
-    now=$(date +%s)
-    remaining=$((epoch - now))
-    [ "$remaining" -le 0 ] && echo "0m" && return
-    local days=$((remaining / 86400))
-    if [ "$days" -ge 1 ]; then
-        local hours=$(( (remaining % 86400) / 3600 ))
-        echo "${days}d${hours}h"
-    else
-        local hours=$((remaining / 3600))
-        local mins=$(( (remaining % 3600) / 60 ))
-        if [ "$hours" -gt 0 ]; then
-            echo "${hours}h${mins}m"
-        else
-            echo "${mins}m"
-        fi
-    fi
+    fmt_duration_compact $(( epoch - $(date +%s) ))
 }
 
 # Work hour detection
@@ -195,20 +201,25 @@ calc_active_pct() {
 BAR=$(make_bar "$PCT" 20)
 BAR_COLOR=$(bar_color "$PCT")
 
-# Duration
-DURATION_SEC=$((DURATION_MS / 1000))
-if [ "$DURATION_SEC" -ge 3600 ]; then
-    HOURS=$((DURATION_SEC / 3600))
-    MINS=$(( (DURATION_SEC % 3600) / 60 ))
-    DURATION_FMT="${HOURS}h ${MINS}m"
-else
-    MINS=$((DURATION_SEC / 60))
-    SECS=$((DURATION_SEC % 60))
-    DURATION_FMT="${MINS}m ${SECS}s"
-fi
+WALL_FMT=$(fmt_duration_compact $((DURATION_MS / 1000)))
+API_FMT=$(fmt_duration_compact $((API_DURATION_MS / 1000)))
 
 # Cost
 COST_FMT=$(printf '$%.2f' "$COST")
+
+# Cache hit rate (last API call). Inverse color — higher is better.
+# current_usage is null before first API call; denom will be 0 → show "--".
+CACHE_DENOM=$((CUR_INPUT + CUR_CACHE_CREATE + CUR_CACHE_READ))
+if [ "$CACHE_DENOM" -gt 0 ]; then
+    CACHE_HIT_PCT=$((CUR_CACHE_READ * 100 / CACHE_DENOM))
+    if [ "$CACHE_HIT_PCT" -ge 95 ]; then CACHE_COLOR="$GREEN"
+    elif [ "$CACHE_HIT_PCT" -ge 80 ]; then CACHE_COLOR="$YELLOW"
+    elif [ "$CACHE_HIT_PCT" -ge 50 ]; then CACHE_COLOR="$ORANGE"
+    else CACHE_COLOR="$RED"; fi
+    CACHE_FMT="💾 ${CACHE_COLOR}${CACHE_HIT_PCT}%${RESET}"
+else
+    CACHE_FMT="${DIM}💾 --${RESET}"
+fi
 
 # Rate limits
 if [ -n "$FIVE_H_PCT" ]; then
@@ -303,14 +314,17 @@ DIR_LINK="\033]8;;${DIR_URL}\a${DIR_NAME}\033]8;;\a"
 LINE1="${CYAN}[${MODEL}]${RESET} 📁 ${DIR_LINK}"
 [ -n "$BRANCH" ] && LINE1="${LINE1} ${DIM}|${RESET} 🔀 ${GREEN}${BRANCH}${RESET}"
 LINE1="${LINE1} ${DIM}|${RESET} ${FILE_COUNT} files ${GREEN}+${DIFF_ADD}${RESET} ${RED}-${DIFF_DEL}${RESET}"
-LINE1="${LINE1} ${DIM}|${RESET} ${DIM}↑${SEND_FMT} ↓${RECV_FMT}${RESET}"
-LINE1="${LINE1} ${DIM}|${RESET} ${YELLOW}${COST_FMT}${RESET}"
+# Uncomment to show cumulative session tokens (↑input ↓output):
+# LINE1="${LINE1} ${DIM}|${RESET} ${DIM}↑${SEND_FMT} ↓${RECV_FMT}${RESET}"
+LINE1="${LINE1} ${DIM}|${RESET} ${CACHE_FMT}"
+LINE1="${LINE1} ${DIM}|${RESET} ${YELLOW}${COST_FMT}${RESET} ${DIM}/${RESET} ${API_FMT} ${DIM}/${RESET} ${WALL_FMT}"
 
 USABLE_COLOR=$(bar_color "$USABLE_PCT")
 LINE2="${BAR} ${BAR_COLOR}${PCT}%${RESET} ${USABLE_COLOR}[${USABLE_PCT}%]${RESET} ${DIM}(${USED_FMT}/${CTX_FMT})${RESET}"
 LINE2="${LINE2} ${DIM}|${RESET} ${FIVE_H_FMT}"
 LINE2="${LINE2} ${DIM}|${RESET} ${SEVEN_D_FMT}"
-# Uncomment to show duration:
-# LINE2="${LINE2} ${DIM}|${RESET} ${DIM}⏱ ${DURATION_FMT}${RESET}"
+# (Session wall + API durations now shown inline with cost on line 1 as
+#  `$X.XX / api / wall`. If you ever want them on line 2 instead, reference
+#  $WALL_FMT / $API_FMT here.)
 
 echo -e "${LINE1}\n${LINE2}"

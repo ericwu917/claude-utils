@@ -10,6 +10,27 @@ schema shifts) may land in minor versions.
 ## [Unreleased]
 
 ### Added
+- `statusline/statusline.sh`: cost field on line 1 now expands to
+  `$X.XX / <api_duration> / <wall_duration>` (e.g. `$4.34 / 4h10m / 1d2h`),
+  giving a quick read on how much of the session's wall-clock time was
+  actually spent waiting on the model. Two-tier minute-precision duration
+  format: `XdYh` at ≥24h, `XhYm` otherwise. The formatter is shared with
+  the existing `5h`/`7d` rate-limit countdowns — `fmt_remaining` now
+  delegates to it, eliminating the previous near-duplicate formatter.
+  Sources `cost.total_api_duration_ms` (newly parsed) and the existing
+  `cost.total_duration_ms`. The previously-commented-out line-2 duration
+  slot has been retired in favor of this inline placement.
+- `statusline/statusline.sh`: line 1 now shows prompt cache hit rate as
+  `💾 XX%` in the slot previously occupied by cumulative `↑input ↓output`
+  tokens. Computed from `context_window.current_usage` as
+  `cache_read / (input + cache_creation + cache_read)` — so it reflects
+  **the last API call only** (stdin doesn't expose cumulative cache totals).
+  Inverse color scale calibrated against observed Claude Code steady state:
+  ≥95% green, 80–95% yellow, 50–80% orange, <50% red; displayed as `💾 --`
+  before the first API call, when `current_usage` is `null`. The old
+  cumulative-token display is kept as a one-line comment in the script for
+  easy re-enable. Anthropic does not publish a cache-hit target — thresholds
+  are empirical, not official.
 - `statusline/statusline.sh`: line-1 directory name is now a cmd/modifier+click
   hyperlink that opens the folder in Finder. Implemented via an OSC 8 escape
   (`file://` URL) around `DIR_NAME`; unsupported terminals (Terminal.app)
