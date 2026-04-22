@@ -15,7 +15,7 @@
 打开 Claude Code，把下面这段贴进去，让 Claude 自己做完：
 
 > 帮我装 claude-utils：
-> 1. 跑 `git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils`
+> 1. 跑 `git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/claude-utils`
 > 2. 跑 `~/.claude/claude-utils/install.sh --all`
 > 3. 如果 install.sh 报了 "Conflict" 或 "jq is required"，读 `~/.claude/claude-utils/docs/SETTINGS_MERGE.md` 帮我手动合并 `~/.claude/settings.json`（合并前备份）
 > 4. 装完告诉我需要重启 Claude Code 会话（或运行 `/hooks` 重载）hooks 才生效
@@ -23,7 +23,7 @@
 ### 或：手动安装
 
 ```bash
-git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils
+git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/claude-utils
 ~/.claude/claude-utils/install.sh --all         # 默认装 hooks + statusline
 ~/.claude/claude-utils/install.sh --hooks       # 只装 hooks
 ~/.claude/claude-utils/install.sh --statusline  # 只装 statusline

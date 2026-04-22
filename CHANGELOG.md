@@ -102,5 +102,5 @@ schema shifts) may land in minor versions.
   `docs/SETTINGS_MERGE.md`), with Chinese versions preserved at the `.zh.md`
   siblings and cross-linked at the top of each file.
 
-[Unreleased]: https://github.com/taige/claude-utils/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/taige/claude-utils/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ericwu917/claude-utils/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ericwu917/claude-utils/releases/tag/v0.1.0

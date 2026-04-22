@@ -15,7 +15,7 @@ Personal Claude Code extensions: worktree lifecycle hooks and a custom terminal 
 Open Claude Code and paste this. Claude does the rest.
 
 > Install claude-utils:
-> 1. Run `git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils`
+> 1. Run `git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/claude-utils`
 > 2. Run `~/.claude/claude-utils/install.sh --all`
 > 3. If the install script reports `Conflict` or `jq is required`, read `~/.claude/claude-utils/docs/SETTINGS_MERGE.md` and help me merge `~/.claude/settings.json` manually (create a timestamped backup first).
 > 4. When install is done, tell me to restart the Claude Code session (or run `/hooks`) for hooks to take effect.
@@ -23,7 +23,7 @@ Open Claude Code and paste this. Claude does the rest.
 ### Or install manually
 
 ```bash
-git clone --depth 1 https://github.com/taige/claude-utils.git ~/.claude/claude-utils
+git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/claude-utils
 ~/.claude/claude-utils/install.sh --all         # default: hooks + statusline
 ~/.claude/claude-utils/install.sh --hooks       # hooks only
 ~/.claude/claude-utils/install.sh --statusline  # statusline only
