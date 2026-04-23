@@ -21,7 +21,8 @@
 | `🔀 master` | Git 分支 |
 | `3 files +25 -10` | 未提交的文件变更（`git diff --shortstat HEAD`） |
 | `💾 95%` | **最近一轮** API 调用的 prompt 缓存命中率 |
-| `$0.50 / 4h10m / 1d2h` | 会话费用 **/** 累计 API 等待时间 **/** 墙钟时间。紧凑时长格式：`<24h` → `XhYm`，`≥24h` → `XdYh`（分钟精度；`5h`/`7d` 倒计时也走同一套格式化）。 |
+| `$3.42 / $54.3 / $3.2K` | 会话费用 **/** 今日花销 **/** 本月累计。session 字段来自 stdin 实时值；今日与本月由 [`ccusage`](https://github.com/ryoppippi/ccusage) 提供（可选 —— 未安装则显示 `--`）。紧凑美元格式：`$X.XX` < 10，`$XX.X` < 100，`$XXX` < 1000，`$X.XK` ≥ 1000。 |
+| `4h10m / 1d2h` | 累计 API 等待时间 **/** 墙钟时间。紧凑时长格式：`<24h` → `XhYm`，`≥24h` → `XdYh`（分钟精度；`5h`/`7d` 倒计时也走同一套格式化）。 |
 
 ### 第二行 — 配额状态
 
@@ -91,6 +92,17 @@
 
 当前时间在工作时段外（默认 22:00-09:00）时，5h 和 7d 的**进度条和百分比强制显示红色**，提醒你正在非常规时段使用。
 
+### 今日 / 本月累计花销
+
+第一行的费用字段从单个 session 数字扩展为 `$session / $today / $month`，让你同时看到三个真正决定使用决策的时间尺度："这一条回复多贵"、"今天已经花了多少"、"这个月走到哪一步了"。
+
+- **Session**（`$3.42`，黄色）—— 每次渲染直接读 stdin 的 `cost.total_cost_usd`，< $10 时保留两位小数。
+- **今日 / 本月**（`$54.3 / $3.2K`，淡色）—— 由 [`ccusage`](https://github.com/ryoppippi/ccusage) 扫描 `~/.claude/projects/*/*.jsonl` 按 token 乘以当前模型单价计算，数值与 `ccusage daily` / `ccusage monthly` 一致。如果 `PATH` 或 `~/.bun/bin/` 下都找不到 `ccusage`，这两格降级为 `--`，不影响其他字段。
+- **缓存模型** —— 每次渲染只读 `~/.claude/ccusage-cache.json`（很便宜）。缓存超过 `STATUSLINE_CCUSAGE_TTL`（默认 600s）时，后台启一个子 shell 跑 `ccusage` 刷新缓存后退出（原子 rename 写入），**渲染本身永远不阻塞**。并发刷新用 `~/.claude/ccusage-cache.lock` 目录（`mkdir` 原子性）防雪崩，>60s 的死锁自清理。
+- **时区** —— 今日和本月的分桶按 `STATUSLINE_CCUSAGE_TZ`（默认 = `/etc/localtime` 指向的系统时区）。比如上海跨日到 00:00，下次刷新时"今日"会自动归零，不受 JSONL 记录的时间戳影响。
+
+代价：每个 TTL 窗口多跑一次 `ccusage` 子进程。其他全是 `jq` + `awk` 对缓存 JSON 操作，每次渲染开销 < 1ms。
+
 ## 安装
 
 ### 前置依赖
@@ -98,6 +110,7 @@
 - bash
 - jq
 - git（可选，用于显示分支和文件变更）
+- [`ccusage`](https://github.com/ryoppippi/ccusage)（可选，用于显示今日 / 本月累计花销 —— `bun add -g ccusage` 或 `npm install -g ccusage`；不装则这两格显示 `--`）
 - macOS（`date -j -f` 用于时间计算）
 
 ### 配置
@@ -124,6 +137,8 @@ cp statusline.sh ~/.claude/statusline-command.sh
 |------|--------|------|
 | `STATUSLINE_WORK_START` | `9` | 工作时段开始（小时，0-23） |
 | `STATUSLINE_WORK_END` | `22` | 工作时段结束（小时，0-23） |
+| `STATUSLINE_CCUSAGE_TTL` | `600` | 今日 / 本月花销后台刷新间隔（秒） |
+| `STATUSLINE_CCUSAGE_TZ` | 系统时区（读 `/etc/localtime`） | 今日 / 本月分桶使用的 IANA 时区（如 `Asia/Shanghai`），与 `ccusage --timezone` 保持一致 |
 
 示例：调整为 8:00-21:00 工作时段：
 
@@ -134,7 +149,7 @@ export STATUSLINE_WORK_END=21
 
 ## 数据来源
 
-所有数据来自 Claude Code 通过 stdin 传入的 JSON，主要字段：
+大部分字段来自 Claude Code 通过 stdin 传入的 JSON。例外是今日 / 本月累计花销两格，它们由 `ccusage` 扫描 `~/.claude/projects/*/*.jsonl` 而来（见上文[今日 / 本月累计花销](#今日--本月累计花销)）。stdin 字段列表：
 
 | JSON 路径 | 用途 |
 |-----------|------|

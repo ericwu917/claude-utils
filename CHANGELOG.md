@@ -10,6 +10,25 @@ schema shifts) may land in minor versions.
 ## [Unreleased]
 
 ### Added
+- `statusline/statusline.sh`: line-1 cost field now shows
+  `$session / $today / $month` (e.g. `$3.42 / $54.3 / $3.2K`), giving the
+  three horizons that actually drive usage decisions — per-reply, today's
+  burn, month-to-date. Session is live from stdin; today and month come
+  from [`ccusage`](https://github.com/ryoppippi/ccusage) which reads the
+  raw transcripts under `~/.claude/projects/*/*.jsonl` and multiplies
+  tokens by current model pricing. Results are cached in
+  `~/.claude/ccusage-cache.json` with a TTL (default 600s, override via
+  `STATUSLINE_CCUSAGE_TTL`) and refreshed lazily in a backgrounded
+  subshell, so statusline rendering itself never blocks on `ccusage`
+  (which takes a few seconds on a cold pricing fetch). Concurrent
+  refreshers are serialized via a `mkdir` lock with a 60s self-heal.
+  Bucket TZ for "today" / "month" is `STATUSLINE_CCUSAGE_TZ` (default =
+  system TZ from `/etc/localtime`) so values line up with what
+  `ccusage --timezone` reports. If `ccusage` isn't on `PATH` (nor under
+  `~/.bun/bin/`), both slots gracefully degrade to `--` and the rest of
+  the statusline is unaffected. Compact `$` format: `$X.XX` < 10,
+  `$XX.X` < 100, `$XXX` < 1000, `$X.XK` ≥ 1000. Durations (`api / wall`)
+  move to their own `|`-separated segment on line 1.
 - `statusline/statusline.sh`: cost field on line 1 now expands to
   `$X.XX / <api_duration> / <wall_duration>` (e.g. `$4.34 / 4h10m / 1d2h`),
   giving a quick read on how much of the session's wall-clock time was

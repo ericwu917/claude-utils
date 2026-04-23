@@ -21,7 +21,8 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 | `🔀 master` | Git branch |
 | `3 files +25 -10` | Uncommitted file changes (`git diff --shortstat HEAD`) |
 | `💾 95%` | Prompt cache hit rate for the **last** API call |
-| `$0.50 / 4h10m / 1d2h` | Session cost **/** cumulative API wait time **/** wall-clock time. Compact duration format: `<24h` → `XhYm`, `≥24h` → `XdYh` (minute precision; same formatter drives the `5h`/`7d` countdowns). |
+| `$3.42 / $54.3 / $3.2K` | Session cost **/** today's cost **/** month-to-date cost. Session is live from stdin; today & month come from [`ccusage`](https://github.com/ryoppippi/ccusage) (optional — displays `--` if not installed). Compact `$` format: `$X.XX` < 10, `$XX.X` < 100, `$XXX` < 1000, `$X.XK` ≥ 1000. |
+| `4h10m / 1d2h` | Cumulative API wait time **/** session wall-clock time. Compact duration format: `<24h` → `XhYm`, `≥24h` → `XdYh` (minute precision; same formatter drives the `5h`/`7d` countdowns). |
 
 ### Line 2 — quota status
 
@@ -91,6 +92,17 @@ This makes the time marker reflect "at a normal usage pace, how much should I ha
 
 When the current time is outside the working window (default 22:00–09:00), the 5h and 7d bars and percentages **force red**, reminding you that you're running off-hours.
 
+### Today & month-to-date cost
+
+The line-1 cost field expands from the single session number to `$session / $today / $month`, so you always see the **three** horizons that actually drive decisions: "how expensive is this reply", "how much have I already spent today", and "where am I for the month".
+
+- **Session** (`$3.42`, yellow) — live from `cost.total_cost_usd` on every render, two-decimal precision for values under $10.
+- **Today** and **month-to-date** (`$54.3 / $3.2K`, dim) — computed by [`ccusage`](https://github.com/ryoppippi/ccusage), which reads the raw transcripts under `~/.claude/projects/*/*.jsonl` and multiplies tokens by current model pricing. Dollar amounts match what `ccusage daily` / `ccusage monthly` would print. If `ccusage` isn't on `PATH` (or under `~/.bun/bin/`), both slots degrade to `--`; the rest of the statusline is unaffected.
+- **Caching model** — each render reads `~/.claude/ccusage-cache.json` (cheap). When the cache is older than `STATUSLINE_CCUSAGE_TTL` (default 600s), a backgrounded subshell forks `ccusage`, updates the cache with atomic rename, and exits — **rendering itself never blocks**. A `~/.claude/ccusage-cache.lock` directory (mkdir is atomic) prevents concurrent refreshers from piling up; a dead-lock >60s old is self-cleared.
+- **Time zone** — `today` and `month` are bucketed by `STATUSLINE_CCUSAGE_TZ` (default = system TZ from `/etc/localtime`), so at Shanghai midnight, "today" resets to zero on the next refresh regardless of where the underlying JSONL timestamps live.
+
+Cost of the extra feature: one `ccusage` subprocess per TTL window. Everything else is `jq` + `awk` on cached JSON — sub-millisecond per render.
+
 ## Install
 
 ### Requirements
@@ -98,6 +110,7 @@ When the current time is outside the working window (default 22:00–09:00), the
 - bash
 - jq
 - git (optional, for branch and diff display)
+- [`ccusage`](https://github.com/ryoppippi/ccusage) (optional, for the today / month-to-date cost display — `bun add -g ccusage` or `npm install -g ccusage`; without it, those two slots show `--`)
 - macOS (`date -j -f` is used in the active-time calculation)
 
 ### Configuration
@@ -126,6 +139,8 @@ When the current time is outside the working window (default 22:00–09:00), the
 |------|--------|------|
 | `STATUSLINE_WORK_START` | `9` | Working window start (hour, 0–23) |
 | `STATUSLINE_WORK_END` | `22` | Working window end (hour, 0–23) |
+| `STATUSLINE_CCUSAGE_TTL` | `600` | Background-refresh interval for the today/month cost (seconds) |
+| `STATUSLINE_CCUSAGE_TZ` | system TZ (from `/etc/localtime`) | IANA zone (e.g. `Asia/Shanghai`) used to bucket today/month, matching what `ccusage --timezone` reports |
 
 Example: set working hours to 8:00–21:00:
 
@@ -136,7 +151,7 @@ export STATUSLINE_WORK_END=21
 
 ## Data sources
 
-All data comes from the JSON Claude Code pipes in on stdin. Key fields:
+Most fields come from the JSON Claude Code pipes in on stdin. The exceptions are the today / month-to-date cost slots, which come from `ccusage` reading `~/.claude/projects/*/*.jsonl` (see [Today & month-to-date cost](#today--month-to-date-cost) above). Stdin-driven fields:
 
 | JSON path | Use |
 |-----------|------|

@@ -207,6 +207,77 @@ API_FMT=$(fmt_duration_compact $((API_DURATION_MS / 1000)))
 # Cost
 COST_FMT=$(printf '$%.2f' "$COST")
 
+# Month-to-date cost (ccusage-backed). Cached in ~/.claude/ccusage-cache.json
+# with a TTL, refreshed lazily in the background so rendering stays fast.
+# Session cost above is live from stdin; monthly needs to scan JSONL so we cache.
+CCUSAGE_CACHE="$HOME/.claude/ccusage-cache.json"
+CCUSAGE_LOCK="$HOME/.claude/ccusage-cache.lock"
+CCUSAGE_TTL=${STATUSLINE_CCUSAGE_TTL:-600}  # seconds; override with env if desired
+
+TODAY_COST=""
+MONTH_COST=""
+CACHE_AGE=99999
+if [ -f "$CCUSAGE_CACHE" ]; then
+    CACHE_AGE=$(( NOW - $(stat -f %m "$CCUSAGE_CACHE") ))
+    TODAY_COST=$(jq -r '.today // ""' "$CCUSAGE_CACHE" 2>/dev/null)
+    MONTH_COST=$(jq -r '.month // ""' "$CCUSAGE_CACHE" 2>/dev/null)
+fi
+
+# Clear lock left by a dead refresher (older than 60s).
+if [ -d "$CCUSAGE_LOCK" ]; then
+    LOCK_AGE=$(( NOW - $(stat -f %m "$CCUSAGE_LOCK") ))
+    [ "$LOCK_AGE" -gt 60 ] && rmdir "$CCUSAGE_LOCK" 2>/dev/null
+fi
+
+# Stale → fork background refresh, keep rendering with current (possibly stale)
+# value. mkdir is atomic so concurrent statuslines don't pile up refreshers.
+if [ "$CACHE_AGE" -gt "$CCUSAGE_TTL" ]; then
+    CCUSAGE_BIN=$(command -v ccusage 2>/dev/null)
+    [ -z "$CCUSAGE_BIN" ] && [ -x "$HOME/.bun/bin/ccusage" ] && CCUSAGE_BIN="$HOME/.bun/bin/ccusage"
+    if [ -n "$CCUSAGE_BIN" ] && mkdir "$CCUSAGE_LOCK" 2>/dev/null; then
+        (
+            trap 'rmdir "$CCUSAGE_LOCK" 2>/dev/null' EXIT
+            TZ_NAME=${STATUSLINE_CCUSAGE_TZ:-$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')}
+            TZ_NAME=${TZ_NAME:-UTC}
+            # Month-start in the reporting TZ (not the system TZ) so the month
+            # boundary lines up with what ccusage --timezone buckets by.
+            MONTH_START=$(TZ="$TZ_NAME" date +%Y%m01)
+            TODAY_DATE=$(TZ="$TZ_NAME" date +%Y-%m-%d)
+            DATA=$("$CCUSAGE_BIN" daily --since "$MONTH_START" --timezone "$TZ_NAME" --json 2>/dev/null)
+            if [ -n "$DATA" ]; then
+                # Single ccusage call — month = sum over all days, today = filter
+                # to today's date. Free lunch; same source JSON.
+                M=$(echo "$DATA" | jq -r '[.daily[].totalCost] | (add // 0)')
+                T=$(echo "$DATA" | jq -r --arg d "$TODAY_DATE" '[.daily[] | select(.date==$d) | .totalCost] | (add // 0)')
+                if [ -n "$M" ] && [ -n "$T" ]; then
+                    # mktemp alongside the cache file guarantees same filesystem,
+                    # so the mv below is an atomic rename (no half-written state).
+                    tmp=$(mktemp "${CCUSAGE_CACHE}.XXXXXX")
+                    jq -n --argjson t "$T" --argjson m "$M" --arg u "$(date +%s)" \
+                        '{today: $t, month: $m, updated_at: ($u | tonumber)}' > "$tmp" && \
+                        mv "$tmp" "$CCUSAGE_CACHE"
+                fi
+            fi
+        ) >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+    fi
+fi
+
+# Compact cost formatter: $X.XX / $XX.X / $XXX / $X.XK
+fmt_cost_compact() {
+    local c=$1
+    [ -z "$c" ] && { echo "--"; return; }
+    awk -v c="$c" 'BEGIN {
+        if (c+0 < 10) printf "$%.2f", c
+        else if (c+0 < 100) printf "$%.1f", c
+        else if (c+0 < 1000) printf "$%.0f", c
+        else if (c+0 < 10000) printf "$%.1fK", c/1000
+        else printf "$%.0fK", c/1000
+    }'
+}
+TODAY_FMT=$(fmt_cost_compact "$TODAY_COST")
+MONTH_FMT=$(fmt_cost_compact "$MONTH_COST")
+
 # Cache hit rate (last API call). Inverse color — higher is better.
 # current_usage is null before first API call; denom will be 0 → show "--".
 CACHE_DENOM=$((CUR_INPUT + CUR_CACHE_CREATE + CUR_CACHE_READ))
@@ -317,7 +388,7 @@ LINE1="${LINE1} ${DIM}|${RESET} ${FILE_COUNT} files ${GREEN}+${DIFF_ADD}${RESET}
 # Uncomment to show cumulative session tokens (↑input ↓output):
 # LINE1="${LINE1} ${DIM}|${RESET} ${DIM}↑${SEND_FMT} ↓${RECV_FMT}${RESET}"
 LINE1="${LINE1} ${DIM}|${RESET} ${CACHE_FMT}"
-LINE1="${LINE1} ${DIM}|${RESET} ${YELLOW}${COST_FMT}${RESET} ${DIM}/${RESET} ${API_FMT} ${DIM}/${RESET} ${WALL_FMT}"
+LINE1="${LINE1} ${DIM}|${RESET} ${YELLOW}${COST_FMT}${RESET}${DIM}/${RESET}${DIM}${TODAY_FMT}${RESET}${DIM}/${RESET}${DIM}${MONTH_FMT}${RESET} ${DIM}|${RESET} ${API_FMT} ${DIM}/${RESET} ${WALL_FMT}"
 
 USABLE_COLOR=$(bar_color "$USABLE_PCT")
 LINE2="${BAR} ${BAR_COLOR}${PCT}%${RESET} ${USABLE_COLOR}[${USABLE_PCT}%]${RESET} ${DIM}(${USED_FMT}/${CTX_FMT})${RESET}"
