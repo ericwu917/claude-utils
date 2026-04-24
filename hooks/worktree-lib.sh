@@ -94,6 +94,49 @@ is_safe_name_segment() {
   return 0
 }
 
+# Exit 0 if BRANCH's tip is already preserved somewhere outside the
+# branch itself — either merged into develop/master/main (checked on
+# origin first, local fallback if no remote) or reachable from any
+# remote ref (i.e. pushed, even to a non-origin remote). Exit 1 otherwise.
+#
+# Used by worktree-remove.sh before `git branch -D`: force-deleting a
+# branch whose tip lives only in that branch drops unrecoverable work.
+# Unpushed, unmerged branches are preserved; the create hook's reuse
+# logic will reattach a worktree on the next `claude -w <same-name>`.
+#
+# Integration-branch list covers both git-flow (develop + master) and
+# trunk-based (main) layouts. If your repo integrates through a
+# differently-named branch, the push-check usually catches it anyway
+# (branches that mattered get pushed).
+#
+# Note: does NOT fetch. Stale local `origin/develop` may make a merged
+# branch look unmerged, which over-preserves. Over-preservation is the
+# safe failure mode; the cost of a network fetch on every hook run is
+# not.
+branch_is_safely_preserved() {
+  local repo="$1" br="$2" tip target
+  tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br" 2>/dev/null)" || return 1
+  [[ -n "$tip" ]] || return 1
+
+  # Any remote ref contains this tip? Covers `pushed to origin` plus any
+  # other remote the user added (e.g. a fork). `--count=1` short-circuits
+  # on the first hit so this stays O(1) on repos with many remotes.
+  if [[ -n "$(git -C "$repo" for-each-ref --contains "$tip" --count=1 refs/remotes/ 2>/dev/null)" ]]; then
+    return 0
+  fi
+
+  # Merged into a canonical integration branch? Prefer origin/*, fall
+  # back to local refs for local-only repos.
+  for target in origin/develop origin/master origin/main develop master main; do
+    if git -C "$repo" rev-parse --verify --quiet "$target" >/dev/null 2>&1 \
+       && git -C "$repo" merge-base --is-ancestor "$tip" "$target" 2>/dev/null; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 # Resolve the worktree path for a name given during WorktreeRemove.
 # Strategy:
 #   1. If NAME is the default layout (.claude/worktrees/<NAME>), use that.

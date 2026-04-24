@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # WorktreeRemove hook: cleans up worktrees created by worktree-create.sh.
 #   - Removes the worktree (without --force; dirty/untracked preserved).
-#   - Deletes the associated branch if the worktree is gone.
+#   - Deletes the associated branch IF the worktree is gone AND the
+#     branch's tip is preserved elsewhere (merged into develop / master
+#     / main, or reachable from any remote ref). Otherwise the branch
+#     is kept so `git branch -D` can't drop unpushed unmerged work; the
+#     create hook's reuse logic will reattach a worktree next time.
 #   - Removes empty parent dirs under .claude/worktrees/ (e.g. feat/, hotfix/).
 #
 # Exit semantics:
@@ -92,15 +96,22 @@ fi
 say "removed worktree $WT_PATH"
 
 # Branch cleanup (only if the worktree really went away). Same cwd caveat.
+# Gated on branch_is_safely_preserved: `git branch -D` is force-delete,
+# so dropping a branch whose tip isn't on any remote and isn't in
+# develop/master/main would lose unrecoverable user work.
 if [[ -n "$BRANCH" ]]; then
-  set +e
-  BRANCH_ERR="$(git -C "$MAIN_REPO" branch -D "$BRANCH" 2>&1 1>/dev/null)"
-  BRANCH_RC=$?
-  set -e
-  if [[ "$BRANCH_RC" -ne 0 ]]; then
-    say "could not delete branch $BRANCH: $BRANCH_ERR"
+  if branch_is_safely_preserved "$MAIN_REPO" "$BRANCH"; then
+    set +e
+    BRANCH_ERR="$(git -C "$MAIN_REPO" branch -D "$BRANCH" 2>&1 1>/dev/null)"
+    BRANCH_RC=$?
+    set -e
+    if [[ "$BRANCH_RC" -ne 0 ]]; then
+      say "could not delete branch $BRANCH: $BRANCH_ERR"
+    else
+      say "deleted branch $BRANCH"
+    fi
   else
-    say "deleted branch $BRANCH"
+    say "kept branch $BRANCH (not merged into develop/master/main and not on any remote)"
   fi
 fi
 

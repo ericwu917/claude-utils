@@ -51,7 +51,7 @@ Example: `claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s
 
 ### hooks/worktree-remove.sh — `WorktreeRemove`
 
-Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty worktrees are preserved) + `git branch -D` + empty-parent-directory cleanup. Because CC invokes this hook with cwd set to the worktree being removed, every destructive git op is routed through `git -C "$MAIN_REPO"` — git refuses to self-delete its cwd or a checked-out branch, so the hook does the work from the main repo instead.
+Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty worktrees are preserved) + `git branch -D` (**only if the branch's tip is already merged into `develop` / `master` / `main` or reachable from any remote ref**) + empty-parent-directory cleanup. Unmerged, unpushed branches are kept — `branch -D` is force-delete, so dropping a branch whose commits live only there would lose work. Re-invoking `claude -w <same-name>` later reattaches a worktree via the create hook's reuse path. Because CC invokes this hook with cwd set to the worktree being removed, every destructive git op is routed through `git -C "$MAIN_REPO"` — git refuses to self-delete its cwd or a checked-out branch, so the hook does the work from the main repo instead.
 
 ### hooks/last-reply.sh — `Stop`
 

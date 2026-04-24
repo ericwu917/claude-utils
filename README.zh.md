@@ -51,7 +51,7 @@ git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/clau
 
 ### hooks/worktree-remove.sh — `WorktreeRemove`
 
-配对清理。`git worktree remove`（**不带 `--force`**，dirty worktree 会保留）+ `git branch -D` + 清理空父目录。CC 调用此 hook 时 cwd 就是被删的 worktree 本身，所以脚本内部所有 git 写操作都通过 `git -C "$MAIN_REPO"` 从主 repo 上下文执行。
+配对清理。`git worktree remove`（**不带 `--force`**，dirty worktree 会保留）+ `git branch -D`（**仅当分支 tip 已合并进 `develop` / `master` / `main` 或存在于任一 remote ref**，否则保留分支）+ 清理空父目录。没 merge 也没 push 的分支不删 —— `branch -D` 是强制删除，删掉只存在这条分支上的 commit 就找不回来了。下次再 `claude -w <同名>` 时 create hook 的 reuse 路径会自动把 worktree 重新挂回这条分支。CC 调用此 hook 时 cwd 就是被删的 worktree 本身，所以脚本内部所有 git 写操作都通过 `git -C "$MAIN_REPO"` 从主 repo 上下文执行。
 
 ### hooks/last-reply.sh — `Stop`
 

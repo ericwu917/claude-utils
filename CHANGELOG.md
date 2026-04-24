@@ -71,6 +71,15 @@ schema shifts) may land in minor versions.
   interpret `\033\\<text>` as a `\c` stop-output sequence and truncate the
   rest of the line.
 
+### Changed
+- `hooks/worktree-remove.sh` now gates `git branch -D` on whether the
+  branch's tip is preserved elsewhere — merged into `develop` / `master`
+  / `main` (checked on `origin/*` first, local fallback) or reachable
+  from any remote ref. Unmerged, unpushed branches are kept; the create
+  hook's reuse logic reattaches a worktree on the next
+  `claude -w <same-name>`. Old behaviour was unconditional `branch -D`,
+  which could drop unrecoverable work on session exit.
+
 ### Fixed
 - `hooks/worktree-remove.sh`: surface the real failure reason when
   `git worktree remove` is refused (typically: dirty/untracked files such
