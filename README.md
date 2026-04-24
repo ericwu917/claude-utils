@@ -55,9 +55,7 @@ Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty work
 
 ### hooks/last-reply.sh — `Stop`
 
-Records when CC last finished replying in the current session so `statusline/statusline.sh` can render a `⏱ HH:MM` segment at the tail of line 2. Glance at the status bar after stepping away and you see exactly when CC last responded; subtract from your watch to gauge how long ago.
-
-Absolute wall-clock time, by design: the statusline only redraws on interaction, so anything relative (`Xh ago`, `just now`) would be computed while the reply is fresh and then freeze on-screen for the whole time you're away — misleading precisely when you need it to be right.
+Records when CC last finished replying in the current session so `statusline/statusline.sh` can render a `⏱ HH:MM` segment at the tail of line 2.
 
 State lives under `~/.claude/session-meta/<session_id>/last-reply.json` (shape `{"at": <epoch>}`). Layout is one directory per session with one file per "feature"; follow-up hooks can drop their own files (`last-user-prompt.json`, etc.) alongside without coordinating. Session directories idle > 30 days are pruned on every Stop. Writes are atomic; the hook always `exit 0` so it can never stall a reply; rare errors go to `~/.claude/last-reply-hook.log`.
 

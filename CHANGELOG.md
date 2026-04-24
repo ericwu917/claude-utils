@@ -12,15 +12,8 @@ schema shifts) may land in minor versions.
 ### Added
 - `hooks/last-reply.sh` — new `Stop` hook that records when CC last
   finished replying in each session; `statusline/statusline.sh` appends
-  a `⏱ HH:MM` segment to the tail of line 2 so a glance at the status
-  bar tells you exactly when CC last responded — particularly useful
-  after stepping away and resuming a long-running session. Absolute
-  wall-clock time by design: the statusline only redraws on interaction,
-  so a relative label like `Xh ago` or `just now` would be computed once
-  (when the reply finished) and then freeze on-screen for the whole time
-  you're away — i.e. lie precisely when you need it to be right. The
-  HH:MM anchored against your watch is the only thing that stays
-  truthful as the view ages.
+  a `⏱ HH:MM` segment to the tail of line 2 so you can see at a glance
+  when CC last responded in the current session.
 - `hooks/last-reply.sh` state lives under
   `~/.claude/session-meta/<session_id>/last-reply.json`
   (`{"at": <epoch>}`). Layout is one directory per session, one file per

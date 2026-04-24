@@ -55,9 +55,7 @@ git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/clau
 
 ### hooks/last-reply.sh — `Stop`
 
-记录当前会话里 CC 上一次回复完的时间，让 `statusline/statusline.sh` 可以在第二行尾部显示 `⏱ HH:MM` —— 你离开几小时后回来扫一眼状态栏，就知道 CC 上次什么时候回你，跟手表对一下就知道过了多久。
-
-用绝对挂钟时间是刻意的：statusline 只在交互时重绘，一个 `Xh ago` / `just now` 会在回复刚发生时就定好、然后冻在屏幕上陪你度过整段空闲 —— 正好在你需要它准的那一刻撒谎。
+记录当前会话里 CC 上一次回复完的时间，让 `statusline/statusline.sh` 可以在第二行尾部显示 `⏱ HH:MM`。
 
 状态文件在 `~/.claude/session-meta/<session_id>/last-reply.json`（`{"at": <epoch>}`）。布局是"一个 session 一个目录，一个 feature 一个文件"；以后再有 hook 想写 `last-user-prompt.json` 之类的，直接塞旁边，不用协调命名。超过 30 天没动的 session 目录每次 Stop 自动清掉。写入原子；hook 永远 `exit 0`，绝不卡住回复；偶发错误写 `~/.claude/last-reply-hook.log`。
 
