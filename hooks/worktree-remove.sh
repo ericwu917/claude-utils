@@ -17,9 +17,9 @@
 set -euo pipefail
 
 LOG="$HOME/.claude/worktree-hook.log"
+# shellcheck source=worktree-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/worktree-lib.sh"
 STDIN_JSON="$(cat)"
-
-log() { printf '%s\n' "$*" >> "$LOG"; }
 
 {
   echo "=== $(date -Iseconds) WorktreeRemove ==="
@@ -30,18 +30,6 @@ log() { printf '%s\n' "$*" >> "$LOG"; }
 say() {
   echo "worktree-remove hook: $*" >&2
   log "$*"
-}
-
-jq_first() {
-  local path val
-  for path in "$@"; do
-    val="$(printf '%s' "$STDIN_JSON" | jq -r "$path // empty" 2>/dev/null || true)"
-    if [[ -n "$val" && "$val" != "null" ]]; then
-      printf '%s' "$val"
-      return 0
-    fi
-  done
-  return 0
 }
 
 PATH_RAW="$(jq_first '.worktree_path' '.path' '.worktreePath' '.hookSpecificOutput.worktreePath')"
@@ -68,28 +56,21 @@ if [[ -z "$MAIN_REPO" ]] || [[ ! -d "$MAIN_REPO" ]]; then
 fi
 WORKTREES_ROOT="$MAIN_REPO/.claude/worktrees"
 
-# Resolve worktree path.
+# Resolve worktree path. resolve_worktree_from_name is the shared helper that
+# worktree-create.sh's reuse logic is built on, so name→path stays symmetric
+# across the two hooks (and we avoid building regexes from untrusted name
+# segments).
 WT_PATH=""
 if [[ -n "$PATH_RAW" ]]; then
   WT_PATH="$PATH_RAW"
 elif [[ -n "$NAME" ]]; then
-  # 1) Try default layout .claude/worktrees/<name>
-  if [[ -d "$WORKTREES_ROOT/$NAME" ]]; then
-    WT_PATH="$WORKTREES_ROOT/$NAME"
-  else
-    # 2) Search registered worktrees for a path ending in a date-stamped variant of name.
-    #    e.g. name=feat/hook-smoke-test -> path .../feat/260418-hook-smoke-test
-    REST="${NAME#feat/}"
-    REST="${REST#hotfix/}"
-    WT_PATH="$(git worktree list --porcelain \
-      | awk '/^worktree /{print $2}' \
-      | grep -E "/(feat|hotfix)/[0-9]{6}-${REST}$" \
-      | head -1 || true)"
-  fi
+  WT_PATH="$(resolve_worktree_from_name "$MAIN_REPO" "$WORKTREES_ROOT" "$NAME")"
 fi
 
 if [[ -z "$WT_PATH" ]] || [[ ! -d "$WT_PATH" ]]; then
   say "couldn't resolve worktree path (path=$PATH_RAW name=$NAME); skipping"
+  log "git worktree list at failure:"
+  git -C "$MAIN_REPO" worktree list --porcelain >> "$LOG" 2>&1 || true
   exit 1
 fi
 
