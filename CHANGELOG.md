@@ -9,6 +9,8 @@ schema shifts) may land in minor versions.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-25
+
 ### Added
 - `hooks/last-reply.sh` — new `Stop` hook that records when CC last
   finished replying in each session; `statusline/statusline.sh` appends
