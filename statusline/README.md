@@ -31,6 +31,7 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 | `████░░░░ 35% (70k/200k)` | Context window usage (20-char bar) |
 | `5h ██░│░░░ 27% (3h12m)` | 5-hour rolling-window usage (10-char bar) |
 | `7d ████░│░░░░░░ 30% (5d8h)` | 7-day window usage (14-char bar) |
+| `⏱ 14:32` | When CC last finished replying in this session (wall-clock `HH:MM`). Populated by the `Stop` hook `hooks/last-reply.sh`; hidden until that hook has fired at least once. |
 
 ## Core features
 
@@ -92,6 +93,16 @@ This makes the time marker reflect "at a normal usage pace, how much should I ha
 
 When the current time is outside the working window (default 22:00–09:00), the 5h and 7d bars and percentages **force red**, reminding you that you're running off-hours.
 
+### Last-reply timestamp
+
+`⏱ HH:MM` at the tail of line 2 shows **when CC last finished replying** in the current session — the reply's own wall-clock time, same format whether it was 30 seconds or 30 hours ago. Populated by the `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh), which stamps `~/.claude/session-meta/<session_id>/last-reply.json` on every reply. The segment is hidden until that hook has fired at least once.
+
+**Why absolute time and not `Xh ago`** — the statusline only redraws on interaction, and every redraw fires within seconds of the reply it's labeling. A relative label computed at render time would pick its branch while the reply is fresh, then sit frozen on-screen for however long you're away — misleading precisely when you care about it. A wall-clock `HH:MM` against your watch stays truthful regardless; one second of mental subtraction gives the answer.
+
+Past 24h the `HH:MM` no longer tells you which day, but by then you've usually moved on from that session's thread anyway — prefer a truthful coarse answer to a prettier lying one.
+
+Use case: walk away, come back hours later, glance at the statusline — no need to scroll the transcript to find where you left off. Per-session, so concurrent sessions each show their own last-reply time; the hook also prunes session dirs idle > 30 days so state never grows unbounded.
+
 ### Today & month-to-date cost
 
 The line-1 cost field expands from the single session number to `$session / $today / $month`, so you always see the **three** horizons that actually drive decisions: "how expensive is this reply", "how much have I already spent today", and "where am I for the month".
@@ -151,7 +162,12 @@ export STATUSLINE_WORK_END=21
 
 ## Data sources
 
-Most fields come from the JSON Claude Code pipes in on stdin. The exceptions are the today / month-to-date cost slots, which come from `ccusage` reading `~/.claude/projects/*/*.jsonl` (see [Today & month-to-date cost](#today--month-to-date-cost) above). Stdin-driven fields:
+Most fields come from the JSON Claude Code pipes in on stdin. Exceptions:
+
+- **Today / month-to-date cost** — computed by `ccusage` reading `~/.claude/projects/*/*.jsonl` (see [Today & month-to-date cost](#today--month-to-date-cost) above).
+- **Last-reply timestamp** — read from `~/.claude/session-meta/<session_id>/last-reply.json`, which the `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh) writes on every reply (see [Last-reply timestamp](#last-reply-timestamp) above).
+
+Stdin-driven fields:
 
 | JSON path | Use |
 |-----------|------|

@@ -371,6 +371,28 @@ DIFF_ADD=$(echo "$SHORTSTAT" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')
 DIFF_DEL=$(echo "$SHORTSTAT" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')
 FILE_COUNT=${FILE_COUNT:-0}; DIFF_ADD=${DIFF_ADD:-0}; DIFF_DEL=${DIFF_DEL:-0}
 
+# Last-reply timestamp (written by hooks/last-reply.sh on every Stop event).
+# Rendered unconditionally as plain "⏱ HH:MM" — no date, no delta, no
+# threshold. Every delta-based rule we tried (Xh-ago, just-now, same-day
+# vs cross-day, hide-past-24h) turned out to be the same trap: the
+# statusline only re-renders on interaction, and re-renders within seconds
+# of the reply, so any check on NOW - LAST_REPLY_AT is computed while the
+# reply is essentially "just now" — it always agrees with whatever fresh
+# branch, then freezes that decision for the entire idle window. The one
+# number that stays truthful as the view ages is the reply's own
+# wall-clock time; the user glances at it against their watch. Missing
+# file (first turn, or hook not installed) → segment is suppressed.
+LAST_REPLY_FMT=""
+if [ -n "$SESSION_ID" ]; then
+    LAST_REPLY_FILE="$HOME/.claude/session-meta/${SESSION_ID}/last-reply.json"
+    if [ -f "$LAST_REPLY_FILE" ]; then
+        LAST_REPLY_AT=$(jq -r '.at // empty' "$LAST_REPLY_FILE" 2>/dev/null)
+        if [ -n "$LAST_REPLY_AT" ]; then
+            LAST_REPLY_FMT="⏱ $(date -r "$LAST_REPLY_AT" +%H:%M 2>/dev/null)"
+        fi
+    fi
+fi
+
 # OSC 8 hyperlink: cmd/modifier+click in supporting terminals (iTerm2, Ghostty,
 # WezTerm, Kitty, ...) opens DIR in Finder via the file:// URL. Terminals that
 # don't understand OSC 8 (Terminal.app) silently ignore it.
@@ -394,6 +416,7 @@ USABLE_COLOR=$(bar_color "$USABLE_PCT")
 LINE2="${BAR} ${BAR_COLOR}${PCT}%${RESET} ${USABLE_COLOR}[${USABLE_PCT}%]${RESET} ${DIM}(${USED_FMT}/${CTX_FMT})${RESET}"
 LINE2="${LINE2} ${DIM}|${RESET} ${FIVE_H_FMT}"
 LINE2="${LINE2} ${DIM}|${RESET} ${SEVEN_D_FMT}"
+[ -n "$LAST_REPLY_FMT" ] && LINE2="${LINE2} ${DIM}|${RESET} ${LAST_REPLY_FMT}"
 # (Session wall + API durations now shown inline with cost on line 1 as
 #  `$X.XX / api / wall`. If you ever want them on line 2 instead, reference
 #  $WALL_FMT / $API_FMT here.)

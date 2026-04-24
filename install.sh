@@ -120,9 +120,14 @@ upsert_hook() {
 }
 
 if [[ $INSTALL_HOOKS -eq 1 ]]; then
-  if upsert_hook WorktreeCreate "$REPO_ROOT/hooks/worktree-create.sh" 120 \
-     && upsert_hook WorktreeRemove "$REPO_ROOT/hooks/worktree-remove.sh" 60; then
-    log "✓ hooks: WorktreeCreate, WorktreeRemove → $REPO_ROOT/hooks/"
+  hooks_ok=1
+  upsert_hook WorktreeCreate "$REPO_ROOT/hooks/worktree-create.sh" 120 || hooks_ok=0
+  upsert_hook WorktreeRemove "$REPO_ROOT/hooks/worktree-remove.sh" 60  || hooks_ok=0
+  # Stop fires when CC finishes a reply; last-reply.sh timestamps the session
+  # so statusline can show "⏱ HH:MM (Xh ago)". Short timeout — trivial write.
+  upsert_hook Stop "$REPO_ROOT/hooks/last-reply.sh" 5 || hooks_ok=0
+  if [[ $hooks_ok -eq 1 ]]; then
+    log "✓ hooks: WorktreeCreate, WorktreeRemove, Stop → $REPO_ROOT/hooks/"
   fi
 fi
 

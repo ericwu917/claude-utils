@@ -53,10 +53,18 @@ git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/clau
 
 配对清理。`git worktree remove`（**不带 `--force`**，dirty worktree 会保留）+ `git branch -D` + 清理空父目录。CC 调用此 hook 时 cwd 就是被删的 worktree 本身，所以脚本内部所有 git 写操作都通过 `git -C "$MAIN_REPO"` 从主 repo 上下文执行。
 
+### hooks/last-reply.sh — `Stop`
+
+记录当前会话里 CC 上一次回复完的时间，让 `statusline/statusline.sh` 可以在第二行尾部显示 `⏱ HH:MM` —— 你离开几小时后回来扫一眼状态栏，就知道 CC 上次什么时候回你，跟手表对一下就知道过了多久。
+
+用绝对挂钟时间是刻意的：statusline 只在交互时重绘，一个 `Xh ago` / `just now` 会在回复刚发生时就定好、然后冻在屏幕上陪你度过整段空闲 —— 正好在你需要它准的那一刻撒谎。
+
+状态文件在 `~/.claude/session-meta/<session_id>/last-reply.json`（`{"at": <epoch>}`）。布局是"一个 session 一个目录，一个 feature 一个文件"；以后再有 hook 想写 `last-user-prompt.json` 之类的，直接塞旁边，不用协调命名。超过 30 天没动的 session 目录每次 Stop 自动清掉。写入原子；hook 永远 `exit 0`，绝不卡住回复；偶发错误写 `~/.claude/last-reply-hook.log`。
+
 ### statusline/statusline.sh — 双行状态栏
 
 第一行：模型、目录、git 分支 + diff、缓存命中率、费用 / API 时间 / 墙钟时间。
-第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续）。
+第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续）。装了上面 Stop hook 时，尾部还会多一段 `⏱ HH:MM`。
 
 详见 [`statusline/README.md`](statusline/README.md)。
 
@@ -66,13 +74,16 @@ git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/clau
 |---|---|
 | 本仓库（建议克隆到 `~/.claude/claude-utils`） | **源码 + 运行时**：`settings.json` 直接引用这里的脚本 |
 | `~/.claude/settings.json` | CC 的配置，由 `install.sh` 幂等合并 |
-| `~/.claude/worktree-hook.log` | 两个 hook 的 stdin JSON 日志，排查问题用 |
+| `~/.claude/session-meta/<session_id>/` | 各 hook 写入、statusline 读取的 per-session 状态文件（如 `last-reply.json`） |
+| `~/.claude/worktree-hook.log` | worktree 两个 hook 的 stdin JSON 日志，排查问题用 |
+| `~/.claude/last-reply-hook.log` | `last-reply.sh` 的非致命错误日志（缺 `session_id`、写入失败等） |
 
 ```
 claude-utils/
 ├── hooks/
 │   ├── worktree-create.sh
-│   └── worktree-remove.sh
+│   ├── worktree-remove.sh
+│   └── last-reply.sh
 ├── statusline/
 │   ├── statusline.sh
 │   └── README.md

@@ -53,10 +53,18 @@ Example: `claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s
 
 Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty worktrees are preserved) + `git branch -D` + empty-parent-directory cleanup. Because CC invokes this hook with cwd set to the worktree being removed, every destructive git op is routed through `git -C "$MAIN_REPO"` — git refuses to self-delete its cwd or a checked-out branch, so the hook does the work from the main repo instead.
 
+### hooks/last-reply.sh — `Stop`
+
+Records when CC last finished replying in the current session so `statusline/statusline.sh` can render a `⏱ HH:MM` segment at the tail of line 2. Glance at the status bar after stepping away and you see exactly when CC last responded; subtract from your watch to gauge how long ago.
+
+Absolute wall-clock time, by design: the statusline only redraws on interaction, so anything relative (`Xh ago`, `just now`) would be computed while the reply is fresh and then freeze on-screen for the whole time you're away — misleading precisely when you need it to be right.
+
+State lives under `~/.claude/session-meta/<session_id>/last-reply.json` (shape `{"at": <epoch>}`). Layout is one directory per session with one file per "feature"; follow-up hooks can drop their own files (`last-user-prompt.json`, etc.) alongside without coordinating. Session directories idle > 30 days are pruned on every Stop. Writes are atomic; the hook always `exit 0` so it can never stall a reply; rare errors go to `~/.claude/last-reply-hook.log`.
+
 ### statusline/statusline.sh — dual-line statusline
 
 Line 1: model, directory, git branch + diff, cache hit rate, cost / API time / wall time.
-Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable.
+Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable. Plus `⏱ HH:MM` at the tail when the Stop hook above is installed.
 
 Full details: [`statusline/README.md`](statusline/README.md).
 
@@ -66,13 +74,16 @@ Full details: [`statusline/README.md`](statusline/README.md).
 |---|---|
 | This repo (recommend cloning to `~/.claude/claude-utils/`) | **Source + runtime** — `settings.json` references scripts here directly |
 | `~/.claude/settings.json` | CC's config; `install.sh` merges entries idempotently |
-| `~/.claude/worktree-hook.log` | stdin JSON of every hook invocation — first stop when debugging |
+| `~/.claude/session-meta/<session_id>/` | Per-session state files written by hooks (e.g. `last-reply.json`) and read by the statusline |
+| `~/.claude/worktree-hook.log` | stdin JSON of every worktree hook invocation — first stop when debugging |
+| `~/.claude/last-reply-hook.log` | non-fatal errors from `last-reply.sh` (missing `session_id`, write failures) |
 
 ```
 claude-utils/
 ├── hooks/
 │   ├── worktree-create.sh
-│   └── worktree-remove.sh
+│   ├── worktree-remove.sh
+│   └── last-reply.sh
 ├── statusline/
 │   ├── statusline.sh
 │   └── README.md

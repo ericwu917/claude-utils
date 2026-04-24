@@ -10,6 +10,27 @@ schema shifts) may land in minor versions.
 ## [Unreleased]
 
 ### Added
+- `hooks/last-reply.sh` — new `Stop` hook that records when CC last
+  finished replying in each session; `statusline/statusline.sh` appends
+  a `⏱ HH:MM` segment to the tail of line 2 so a glance at the status
+  bar tells you exactly when CC last responded — particularly useful
+  after stepping away and resuming a long-running session. Absolute
+  wall-clock time by design: the statusline only redraws on interaction,
+  so a relative label like `Xh ago` or `just now` would be computed once
+  (when the reply finished) and then freeze on-screen for the whole time
+  you're away — i.e. lie precisely when you need it to be right. The
+  HH:MM anchored against your watch is the only thing that stays
+  truthful as the view ages.
+- `hooks/last-reply.sh` state lives under
+  `~/.claude/session-meta/<session_id>/last-reply.json`
+  (`{"at": <epoch>}`). Layout is one directory per session, one file per
+  "feature" — follow-up hooks (e.g. a future `last-user-prompt.json`)
+  drop their files alongside without needing to coordinate key
+  namespaces or serialize writes. Session directories idle > 30 days
+  are pruned automatically on every Stop, so nothing grows unbounded.
+  `install.sh` registers the hook under `hooks.Stop`; conflicts with
+  pre-existing non-claude-utils `Stop` entries surface and skip (same
+  basename-match rule as `WorktreeCreate` / `WorktreeRemove`).
 - `statusline/statusline.sh`: line-1 cost field now shows
   `$session / $today / $month` (e.g. `$3.42 / $54.3 / $3.2K`), giving the
   three horizons that actually drive usage decisions — per-reply, today's
