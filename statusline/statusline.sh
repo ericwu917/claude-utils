@@ -410,15 +410,13 @@ LINE1="${LINE1} ${DIM}|${RESET} ${FILE_COUNT} files ${GREEN}+${DIFF_ADD}${RESET}
 # Uncomment to show cumulative session tokens (↑input ↓output):
 # LINE1="${LINE1} ${DIM}|${RESET} ${DIM}↑${SEND_FMT} ↓${RECV_FMT}${RESET}"
 LINE1="${LINE1} ${DIM}|${RESET} ${CACHE_FMT}"
-LINE1="${LINE1} ${DIM}|${RESET} ${YELLOW}${COST_FMT}${RESET}${DIM}/${RESET}${DIM}${TODAY_FMT}${RESET}${DIM}/${RESET}${DIM}${MONTH_FMT}${RESET} ${DIM}|${RESET} ${API_FMT} ${DIM}/${RESET} ${WALL_FMT}"
+LINE1="${LINE1} ${DIM}|${RESET} ${YELLOW}${COST_FMT}${RESET}${DIM}/${RESET}${DIM}${TODAY_FMT}${RESET}${DIM}/${RESET}${DIM}${MONTH_FMT}${RESET}"
 
 USABLE_COLOR=$(bar_color "$USABLE_PCT")
 LINE2="${BAR} ${BAR_COLOR}${PCT}%${RESET} ${USABLE_COLOR}[${USABLE_PCT}%]${RESET} ${DIM}(${USED_FMT}/${CTX_FMT})${RESET}"
 LINE2="${LINE2} ${DIM}|${RESET} ${FIVE_H_FMT}"
 LINE2="${LINE2} ${DIM}|${RESET} ${SEVEN_D_FMT}"
+LINE2="${LINE2} ${DIM}|${RESET} ${API_FMT} ${DIM}/${RESET} ${WALL_FMT}"
 [ -n "$LAST_REPLY_FMT" ] && LINE2="${LINE2} ${DIM}|${RESET} ${LAST_REPLY_FMT}"
-# (Session wall + API durations now shown inline with cost on line 1 as
-#  `$X.XX / api / wall`. If you ever want them on line 2 instead, reference
-#  $WALL_FMT / $API_FMT here.)
 
 echo -e "${LINE1}\n${LINE2}"
