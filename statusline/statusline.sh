@@ -13,6 +13,7 @@ RESET='\033[0m'
 # Parse JSON (single jq call)
 eval "$(echo "$input" | jq -r '
   @sh "SESSION_ID=\(.session_id // "")",
+  @sh "CC_VERSION=\(.version // "")",
   @sh "MODEL=\(.model.display_name // "?")",
   @sh "DIR=\(.workspace.current_dir // ".")",
   @sh "COST=\(.cost.total_cost_usd // 0)",
@@ -404,7 +405,47 @@ DIR_URL="file://${DIR// /%20}"
 DIR_LINK="\033]8;;${DIR_URL}\a${DIR_NAME}\033]8;;\a"
 
 # Build two lines
-LINE1="${CYAN}[${MODEL}]${RESET} 📁 ${DIR_LINK}"
+# A newer CC version may be installed on disk while this session keeps running
+# the version it started with. Probe common install layouts to find what's on
+# disk; if it's strictly newer than CC_VERSION, append a yellow ↑ as a hint
+# to restart. Layouts covered:
+#   - native installer: ~/.local/share/claude/versions/<X.Y.Z>  (multi-version dir)
+#   - npm/bun/brew:     <prefix>/node_modules/@anthropic-ai/claude-code/package.json
+cc_latest_installed() {
+    local native_dir="$HOME/.local/share/claude/versions"
+    if [ -d "$native_dir" ]; then
+        ls -1 "$native_dir" 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1
+        return
+    fi
+    local p
+    for p in \
+        "$HOME/.claude/local/node_modules/@anthropic-ai/claude-code/package.json" \
+        "$HOME/.npm-global/lib/node_modules/@anthropic-ai/claude-code/package.json" \
+        "$HOME/.bun/install/global/node_modules/@anthropic-ai/claude-code/package.json" \
+        "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/package.json" \
+        "/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json"; do
+        if [ -f "$p" ]; then
+            jq -r '.version // empty' "$p" 2>/dev/null
+            return
+        fi
+    done
+}
+
+VERSION_STR=""
+if [ -n "$CC_VERSION" ]; then
+    VERSION_STR=" v${CC_VERSION}"
+    CC_LATEST=$(cc_latest_installed)
+    if [ -n "$CC_LATEST" ] && [ "$CC_LATEST" != "$CC_VERSION" ]; then
+        # sort -V puts oldest first; confirm $CC_LATEST is strictly newer
+        # (guards against a stray older entry on disk).
+        newer=$(printf '%s\n%s\n' "$CC_VERSION" "$CC_LATEST" | sort -V | tail -1)
+        [ "$newer" = "$CC_LATEST" ] && VERSION_STR="${VERSION_STR}${YELLOW}↑${CYAN}"
+    fi
+fi
+
+LINE1="${CYAN}[${MODEL}${VERSION_STR}]${RESET} 📁 ${DIR_LINK}"
 [ -n "$BRANCH" ] && LINE1="${LINE1} ${DIM}|${RESET} 🔀 ${GREEN}${BRANCH}${RESET}"
 LINE1="${LINE1} ${DIM}|${RESET} ${FILE_COUNT} files ${GREEN}+${DIFF_ADD}${RESET} ${RED}-${DIFF_DEL}${RESET}"
 # Uncomment to show cumulative session tokens (↑input ↓output):

@@ -9,6 +9,18 @@ schema shifts) may land in minor versions.
 
 ## [Unreleased]
 
+### Added
+- `statusline/statusline.sh`: model bracket now shows the running Claude Code
+  CLI version (`[Opus 4.7 v2.1.139]`), sourced from the new `version` field
+  on the stdin payload. When a strictly newer CC is already installed on
+  disk — but this session is still on the older one CC loaded at startup —
+  a yellow `↑` appears right after the version (`v2.1.139↑`) as a nudge to
+  restart. The probe is install-method agnostic: it tries the native
+  multi-version layout (`~/.local/share/claude/versions/<X.Y.Z>`) first,
+  then falls back to `package.json` lookups under common npm / bun /
+  Homebrew / `/usr/local` prefixes. Missing layouts (or older CC builds
+  that don't send `version`) silently omit the segment — no false alarms.
+
 ## [0.2.0] - 2026-04-25
 
 ### Added

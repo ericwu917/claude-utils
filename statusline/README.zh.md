@@ -16,7 +16,7 @@
 
 | 字段 | 说明 |
 |------|------|
-| `[Opus 4.6 (1M context)]` | 当前模型 |
+| `[Opus 4.6 (1M context) v2.1.139↑]` | 当前模型 + Claude Code CLI 版本。黄色 `↑` 表示磁盘上有更新版本但当前 session 还在跑旧版 —— 见[版本升级提示](#版本升级提示)。 |
 | `📁 project` | 项目目录名 |
 | `🔀 master` | Git 分支 |
 | `3 files +25 -10` | 未提交的文件变更（`git diff --shortstat HEAD`） |
@@ -93,6 +93,23 @@
 
 当前时间在工作时段外（默认 22:00-09:00）时，5h 和 7d 的**进度条和百分比强制显示红色**，提醒你正在非常规时段使用。
 
+### 版本升级提示
+
+`vX.Y.Z` 后面那个黄色 `↑` 表示**磁盘上已经装了更新版本的 Claude Code**，但当前 session 还在跑启动时加载的旧版。CC 不会进程内热切，**重启**才会生效。没有 `↑` 就说明你已经在最新版上了。
+
+检测会按下表顺序探测常见安装路径，命中第一条即返回；"最新"指其中报告的版本号严格大于当前运行版本：
+
+| 安装方式 | 路径 |
+|---|---|
+| 官方原生 installer（多版本目录） | `~/.local/share/claude/versions/<X.Y.Z>` |
+| Migration / `claude-bin` installer | `~/.claude/local/node_modules/@anthropic-ai/claude-code/` |
+| npm global | `~/.npm-global/lib/node_modules/...` |
+| bun global | `~/.bun/install/global/node_modules/...` |
+| Homebrew | `/opt/homebrew/lib/node_modules/...` |
+| `/usr/local` | `/usr/local/lib/node_modules/...` |
+
+以上路径都不存在，或 stdin 里没有 `version` 字段（旧版 CC），`vX.Y.Z` 和 `↑` 整段都不显示 —— 不会误报。
+
 ### 上次回复时间戳
 
 第二行末尾的 `⏱ HH:MM` 显示**当前会话里 CC 最近一次回复完的时间**。由 `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh) 每次回复后往 `~/.claude/session-meta/<session_id>/last-reply.json` 写时间戳驱动；hook 至少触发过一次之前这一段不显示。
@@ -166,6 +183,7 @@ stdin 字段列表：
 | JSON 路径 | 用途 |
 |-----------|------|
 | `model.display_name` | 模型名称 |
+| `version` | 当前 session 运行的 Claude Code CLI 版本（与磁盘探测结果对比，决定是否显示 `↑` 升级提示 —— 见[版本升级提示](#版本升级提示)） |
 | `workspace.current_dir` | 当前目录 |
 | `context_window.used_percentage` | 上下文用量 |
 | `context_window.context_window_size` | 上下文窗口大小 |

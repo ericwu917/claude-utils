@@ -16,7 +16,7 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 
 | Field | Description |
 |------|------|
-| `[Opus 4.6 (1M context)]` | Current model |
+| `[Opus 4.6 (1M context) v2.1.139↑]` | Current model + Claude Code CLI version. Yellow `↑` flags a newer CC version on disk — see [Upgrade hint](#upgrade-hint). |
 | `📁 project` | Project directory name |
 | `🔀 master` | Git branch |
 | `3 files +25 -10` | Uncommitted file changes (`git diff --shortstat HEAD`) |
@@ -93,6 +93,23 @@ This makes the time marker reflect "at a normal usage pace, how much should I ha
 
 When the current time is outside the working window (default 22:00–09:00), the 5h and 7d bars and percentages **force red**, reminding you that you're running off-hours.
 
+### Upgrade hint
+
+The yellow `↑` after `vX.Y.Z` means a **newer Claude Code is sitting on disk** but this session is still running the version it loaded at startup. CC won't hot-swap mid-process — restart picks it up. No `↑` = you're already on the newest installed.
+
+The check probes common install layouts and stops at the first hit; "newest" is whichever of those reports a version strictly greater than the running one:
+
+| Layout | Path |
+|---|---|
+| Native installer (multi-version dir) | `~/.local/share/claude/versions/<X.Y.Z>` |
+| Migration / `claude-bin` installer | `~/.claude/local/node_modules/@anthropic-ai/claude-code/` |
+| npm global | `~/.npm-global/lib/node_modules/...` |
+| bun global | `~/.bun/install/global/node_modules/...` |
+| Homebrew | `/opt/homebrew/lib/node_modules/...` |
+| `/usr/local` | `/usr/local/lib/node_modules/...` |
+
+If none of those exist, or stdin has no `version` field (older CC builds), the `vX.Y.Z` segment and `↑` are simply omitted — no false alarms.
+
 ### Last-reply timestamp
 
 `⏱ HH:MM` at the tail of line 2 shows **when CC last finished replying** in the current session. Populated by the `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh), which stamps `~/.claude/session-meta/<session_id>/last-reply.json` on every reply. The segment is hidden until that hook has fired at least once.
@@ -168,6 +185,7 @@ Stdin-driven fields:
 | JSON path | Use |
 |-----------|------|
 | `model.display_name` | Model name |
+| `version` | Claude Code CLI version of the running session (used together with the on-disk probe to render the `↑` upgrade hint — see [Upgrade hint](#upgrade-hint)) |
 | `workspace.current_dir` | Current directory |
 | `context_window.used_percentage` | Context usage |
 | `context_window.context_window_size` | Context window size |
