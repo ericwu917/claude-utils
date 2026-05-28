@@ -19,15 +19,16 @@
 #       reused in preference to stamping today's date on a new branch.
 #     - If the branch exists but no worktree holds it, we attach a new
 #       worktree at the standard path.
-#     - If the standard-path worktree already exists on the target branch,
-#       we just echo that path.
+#     - If a registered worktree already exists at the standard path, we echo
+#       that path and enter it, regardless of which branch it has checked out
+#       (an exact path match wins — `-w` names a path).
 #     - If the branch is checked out at some other path under
 #       $REPO_ROOT/.claude/worktrees/ (e.g. CC's own default layout from
 #       before this hook was installed, or a legacy prefixed path from an
 #       earlier hook version), we fall back to that path.
 #     - Error (do not mutate) when: the branch is checked out truly outside
-#       our worktrees root; or the standard path exists but holds a
-#       different branch or isn't a tracked worktree.
+#       our worktrees root; or the standard path exists but isn't a tracked
+#       worktree.
 #
 #   Output (stdout): absolute path of the worktree to chdir into.
 #   Non-zero exit aborts creation.
@@ -124,15 +125,21 @@ git -C "$REPO_ROOT" worktree prune >&2 2>/dev/null || true
 
 # ---- State dispatch ----
 
-# (a) Standard path already occupied.
+# (a) Standard path already occupied. If a registered worktree already sits at
+# our exact target path, enter it regardless of which branch it has checked out
+# — `-w` names a path, so an exact path match wins over the branch we'd have
+# computed (e.g. `-w master` landing on a pre-existing worktree that holds the
+# repo default branch). Only refuse if the dir exists but isn't a tracked
+# worktree (leftover junk we shouldn't silently adopt).
 if [[ -d "$WT_PATH" ]]; then
   is_registered_worktree "$REPO_ROOT" "$WT_PATH" || \
     die "$WT_PATH exists but isn't a tracked git worktree; please remove it manually"
   BRANCH_AT_PATH="$(branch_at_worktree_path "$REPO_ROOT" "$WT_PATH")"
-  if [[ "$BRANCH_AT_PATH" != "$BRANCH" ]]; then
-    die "$WT_PATH is a worktree for ${BRANCH_AT_PATH:-detached HEAD}, not $BRANCH"
+  if [[ "$BRANCH_AT_PATH" == "$BRANCH" ]]; then
+    log "reusing existing worktree at $WT_PATH"
+  else
+    log "entering existing worktree at $WT_PATH (branch ${BRANCH_AT_PATH:-detached HEAD}, not $BRANCH)"
   fi
-  log "reusing existing worktree at $WT_PATH"
   echo "$WT_PATH"
   exit 0
 fi
