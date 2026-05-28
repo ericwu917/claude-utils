@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # WorktreeRemove hook: cleans up worktrees created by worktree-create.sh.
+#   - Acts only on worktrees whose checked-out branch matches our naming
+#     convention (worktree-*, feat/<date>-*, hotfix/<date>-*). A worktree the
+#     create hook merely *entered* on an exact path match (e.g. `claude -w
+#     master` landing on a worktree checked out to main) is left untouched.
 #   - Removes the worktree (without --force; dirty/untracked preserved).
 #   - Deletes the associated branch IF the worktree is gone AND the
 #     branch's tip is preserved elsewhere (merged into develop / master
@@ -80,6 +84,16 @@ fi
 
 # Get branch before removing (symbolic-ref fails on detached HEAD; that's fine).
 BRANCH="$(git -C "$WT_PATH" symbolic-ref --short HEAD 2>/dev/null || true)"
+
+# Only remove worktrees this hook created. The create hook now enters a
+# pre-existing worktree on an exact path match regardless of its branch (e.g.
+# `claude -w master` landing on a worktree checked out to main). Such a worktree
+# was entered, not created, so deleting it on exit would destroy something the
+# user owns. Gate on the branch matching our naming convention.
+if ! is_hook_managed_branch "$BRANCH"; then
+  say "kept worktree $WT_PATH (branch ${BRANCH:-detached HEAD} not hook-managed; entered, not created)"
+  exit 0
+fi
 
 # Remove worktree without --force: dirty/untracked stays put on purpose.
 # Capture git's stderr so we can echo the real reason to the user + log.

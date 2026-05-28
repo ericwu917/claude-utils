@@ -137,6 +137,28 @@ branch_is_safely_preserved() {
   return 1
 }
 
+# Exit 0 if BRANCH was created by worktree-create.sh — i.e. matches one of our
+# naming conventions:
+#   worktree-<name>          (plain case)
+#   feat/<6-digit>-<rest>    (feat case, date-stamped)
+#   hotfix/<6-digit>-<rest>  (hotfix case, date-stamped)
+#
+# A worktree on any other branch (main/master/develop, a branch the user
+# switched to inside the worktree, or detached HEAD → empty BRANCH) was merely
+# *entered* by the create hook's exact-path-match logic, not created by it.
+# worktree-remove.sh uses this to leave such worktrees alone on exit instead of
+# tearing down something the user owns.
+is_hook_managed_branch() {
+  local br="$1"
+  [[ -n "$br" ]] || return 1
+  case "$br" in
+    worktree-?*) return 0 ;;
+  esac
+  [[ "$br" =~ ^feat/[0-9]{6}- ]] && return 0
+  [[ "$br" =~ ^hotfix/[0-9]{6}- ]] && return 0
+  return 1
+}
+
 # Resolve the worktree path for a name given during WorktreeRemove.
 # Strategy:
 #   1. If NAME is the default layout (.claude/worktrees/<NAME>), use that.
