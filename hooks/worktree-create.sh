@@ -5,10 +5,15 @@
 #   name field location isn't fully documented, so we probe multiple paths.
 #
 #   Naming convention (on first creation):
-#     input name     branch                            path under .claude/worktrees/
-#     feat/<rest>    feat/<YYMMDD>-<rest>   (develop)  feat/<YYMMDD>-<rest>/
-#     hotfix/<rest>  hotfix/<YYMMDD>-<rest> (master)   hotfix/<YYMMDD>-<rest>/
-#     <other>        worktree-<name>        (HEAD)     <name>/    (matches CC default)
+#     input name      branch                            path under .claude/worktrees/
+#     feat/<rest>     feat/<YYMMDD>-<rest>   (develop)  feat/<YYMMDD>-<rest>/
+#     hotfix/<rest>   hotfix/<YYMMDD>-<rest> (master)   hotfix/<YYMMDD>-<rest>/
+#     <slug> *        claude/<YYMMDD>-<slug> (HEAD)     <YYMMDD>-<slug>/  (desktop auto-name)
+#     <other>         worktree-<name>        (HEAD)     <name>/    (matches CC default)
+#
+#   * <slug> = a desktop-generated docker-style name (empty transcript_path +
+#     word-word[-hex6], e.g. sad-tharp-abb433). A name you TYPE on the CLI rides
+#     a real session, so it takes the plain <other> row even if it looks slug-y.
 #
 #   Input normalization: a leading `worktree-` prefix on the plain case is
 #   stripped so `claude -w worktree-foo` (a branch name pasted from
@@ -53,6 +58,10 @@ die() {
 
 NAME="$(jq_first '.name' '.tool_input.name' '.toolInput.name' '.worktreeName' '.hookSpecificOutput.name')"
 CWD="$(jq_first '.cwd')"
+# Empty transcript_path is the tell-tale of a desktop-auto worktree (no session
+# transcript exists yet); the create UI sends a random slug as .name. See the
+# is_desktop_auto_name guard in the plain-name case below.
+TRANSCRIPT="$(jq_first '.transcript_path')"
 
 [[ -n "$NAME" ]] || die "could not extract name from stdin. See $LOG"
 
@@ -106,12 +115,32 @@ case "$NAME" in
     fi
     is_safe_name_segment "$NAME" \
       || die "plain worktree name '$NAME' must be non-empty and must not contain '/' or '..'"
-    BRANCH="worktree-${NAME}"
-    # Align plain-name path with Claude Code's own -w default layout
-    # (.claude/worktrees/<name>/). The worktree- prefix is kept on the
-    # branch name only, so hook-created branches still stand out in
-    # `git branch`, but the on-disk directory stays clean.
-    WT_NAME="$NAME"
+    if is_desktop_auto_name "$TRANSCRIPT" "$NAME"; then
+      # Desktop's worktree UI gives no chance to name the worktree, so CC sends a
+      # random docker-style slug with no feat/hotfix intent. Date-stamp it under
+      # the desktop's own `claude/` branch prefix so these read as hook-managed
+      # and sort by day in `git branch`. As with feat/hotfix, a matching dated
+      # branch from any day is reused before stamping today's date, so the
+      # desktop re-entering the same slug tomorrow lands on the same worktree.
+      EXISTING="$(find_existing_dated_branch "$REPO_ROOT" claude "$NAME")"
+      if [[ -n "$EXISTING" ]]; then
+        BRANCH="$EXISTING"
+        log "reusing existing branch $BRANCH for desktop auto-name $NAME"
+      else
+        BRANCH="claude/${TODAY}-${NAME}"
+      fi
+      # Path is the flat date-stamped slug (no claude/ subdir), so it stays a
+      # single clean directory under .claude/worktrees/ — the branch keeps the
+      # claude/ prefix, the directory doesn't.
+      WT_NAME="${BRANCH#claude/}"
+    else
+      BRANCH="worktree-${NAME}"
+      # Align plain-name path with Claude Code's own -w default layout
+      # (.claude/worktrees/<name>/). The worktree- prefix is kept on the
+      # branch name only, so hook-created branches still stand out in
+      # `git branch`, but the on-disk directory stays clean.
+      WT_NAME="$NAME"
+    fi
     BASE="$(git -C "$REPO_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     [[ -n "$BASE" ]] || BASE="HEAD"
     ;;

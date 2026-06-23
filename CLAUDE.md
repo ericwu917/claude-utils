@@ -27,6 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `hooks/` 下两个脚本通过 `settings.json` 挂到 CC 事件（`WorktreeCreate`、`WorktreeRemove`）。以下踩坑点是实测得来，官方文档没写 —— 改脚本时务必记住：
 
 - **`WorktreeCreate` 的 stdin**：worktree name 字段在顶层 `.name`，**不是** `.tool_input.name`。脚本里用 `jq_first` 探测多个路径是为了抗未来字段变动，这个模式要保留。
+- **`transcript_path` 空 = 桌面版自动创建**：CLI 里 `claude -w <name>` 总是带着真实 session 的 `transcript_path`；桌面版自动开 worktree 时还没有 transcript，发的 `.transcript_path` 是空串。这是区分"用户手敲的名字"和"桌面随机 slug"的唯一可靠信号（slug 形状本身不够，`fix-login` 也像 slug）。`is_desktop_auto_name` 就靠这个 + slug 形状两者并存来判定。
 - **`WorktreeRemove` 的 stdin**：路径字段是 `.worktree_path`（snake_case），**不是** `.path` 或 `.worktreePath`。
 - **`WorktreeRemove` 的 cwd 陷阱**：CC 调用此 hook 时，cwd 就是**即将被删的 worktree 本身**。在这个 cwd 直接跑 `git worktree remove` 或 `git branch -D` 会失败 —— git 拒绝自删 cwd，也拒绝删除当前 checked-out 的 branch。所有写操作必须通过 `git -C "$MAIN_REPO"` 执行，其中 `MAIN_REPO` 由 `git worktree list --porcelain` 的第一条记录解析得到。
 - **必须成对配置**：一旦配了 `WorktreeCreate`，就**必须**同时配 `WorktreeRemove`。CC 的默认清理在 `/exit` 时不会跑 —— 即使是干净的 worktree 也不会被自动移除。这一点文档没写。
@@ -37,13 +38,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 不只是外观 —— 前缀决定 base branch：
 
-| 输入 `name` | Branch | Base |
-|---|---|---|
-| `feat/<rest>` | `feat/<YYMMDD>-<rest>` | `origin/develop` |
-| `hotfix/<rest>` | `hotfix/<YYMMDD>-<rest>` | `origin/master` |
-| 其他 | `worktree-<name>` | `origin/HEAD`（fallback） |
+| 输入 `name` | Branch | Base | Worktree 目录 |
+|---|---|---|---|
+| `feat/<rest>` | `feat/<YYMMDD>-<rest>` | `origin/develop` | `feat/<YYMMDD>-<rest>/` |
+| `hotfix/<rest>` | `hotfix/<YYMMDD>-<rest>` | `origin/master` | `hotfix/<YYMMDD>-<rest>/` |
+| `<slug>`（desktop 自动名）| `claude/<YYMMDD>-<slug>` | `origin/HEAD` | `<YYMMDD>-<slug>/` |
+| 其他 | `worktree-<name>` | `origin/HEAD`（fallback） | `<name>/` |
 
-Worktree 落在 `<repo-root>/.claude/worktrees/<branch>/`。如果目标仓库没有约定的 base（例如没有 `origin/develop`），自动回退到 `origin/HEAD`，保证脚本在不使用 git-flow 的项目里也能用。
+如果目标仓库没有约定的 base（例如没有 `origin/develop`），自动回退到 `origin/HEAD`，保证脚本在不使用 git-flow 的项目里也能用。
+
+**desktop 自动名这一行**是为 Claude Code 桌面版准备的：桌面版创建 worktree 时不给输入 name 的机会，CC 直接发一个 docker 风格随机 slug（`sad-tharp-abb433`），没有 feat/hotfix 语义。识别条件是 **`transcript_path` 为空 + slug 形状（`词-词[-6位hex]`）两者同时成立**（判据见 `is_desktop_auto_name`）——只满足形状不够，因为你手敲的 `fix-login` 也长得像 slug，但它带着真实 session 的 `transcript_path`。命中后给它盖日期戳、挂在桌面自己的 `claude/` 前缀下（branch 带 `claude/` 前缀，目录是扁平的 `<YYMMDD>-<slug>`，不嵌套 `claude/` 子目录）。和 feat/hotfix 一样，跨天再进同一个 slug 会复用已有的 dated branch 而不是再盖一个新日期。
+
+> **拿不到桌面的 "Branch prefix" 配置**：桌面设置里的 Branch prefix（默认 `claude/`）存在 app 内部状态里，不落在任何可读的 JSON（`settings.json` / `~/.claude.json` / `Application Support/Claude/*.json` / Local Storage 都没有），hook 读不到，所以这里的 `claude/` 是写死的、用来对齐桌面默认值。桌面的 `git-worktrees.json`（含 `branch` + `sourceBranch`）由桌面的 local-agent 路径写，那条路径**不触发本 hook**，跟 hook 路径完全不重叠，别指望从那里取值。
 
 ## 版本与 commit 约定
 

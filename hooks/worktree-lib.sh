@@ -79,6 +79,20 @@ find_existing_dated_branch() {
               "refs/heads/$prefix/*" 2>/dev/null)
 }
 
+# Exit 0 when a WorktreeCreate payload looks desktop-auto-generated: an empty
+# transcript_path AND a docker-style random slug (word-word, optionally with a
+# -<6 hex> suffix — e.g. sad-tharp-abb433, elated-villani). The desktop worktree
+# UI never lets you type a name, so CC hands the hook one of these slugs, which
+# carry no feat/hotfix intent. A name you type on the CLI always rides a real
+# session (non-empty transcript_path), so it's left on the plain `worktree-`
+# path. Both conditions are required: the slug shape alone can't tell `fix-login`
+# (typed) from `elated-villani` (generated); the empty transcript_path can.
+is_desktop_auto_name() {
+  local transcript="$1" name="$2"
+  [[ -z "$transcript" ]] || return 1
+  [[ "$name" =~ ^[a-z]+-[a-z]+(-[0-9a-f]{6})?$ ]] || return 1
+}
+
 # Reject name segments that could escape the worktrees root or bleed into
 # another path component. `/` turns a single name into a nested path, `..`
 # climbs out of .claude/worktrees/. Git's own branch-name validation
@@ -142,6 +156,11 @@ branch_is_safely_preserved() {
 #   worktree-<name>          (plain case)
 #   feat/<6-digit>-<rest>    (feat case, date-stamped)
 #   hotfix/<6-digit>-<rest>  (hotfix case, date-stamped)
+#   claude/<6-digit>-<rest>  (desktop auto-name case, date-stamped)
+#
+# The claude/ guard requires the 6-digit date right after the prefix, so the
+# desktop's OWN undated `claude/<slug>` branches (created by its local-agent
+# path, which never fires this hook) are not mistaken for ours.
 #
 # A worktree on any other branch (main/master/develop, a branch the user
 # switched to inside the worktree, or detached HEAD → empty BRANCH) was merely
@@ -156,16 +175,17 @@ is_hook_managed_branch() {
   esac
   [[ "$br" =~ ^feat/[0-9]{6}- ]] && return 0
   [[ "$br" =~ ^hotfix/[0-9]{6}- ]] && return 0
+  [[ "$br" =~ ^claude/[0-9]{6}- ]] && return 0
   return 1
 }
 
 # Resolve the worktree path for a name given during WorktreeRemove.
 # Strategy:
 #   1. If NAME is the default layout (.claude/worktrees/<NAME>), use that.
-#   2. Otherwise try feat/<NAME> and hotfix/<NAME> via the same
-#      find_existing_dated_branch + find_worktree_for_branch pair that
-#      worktree-create.sh uses, so both sides stay in sync on what
-#      "the branch for this name" means.
+#   2. Otherwise try feat/<NAME>, hotfix/<NAME> and claude/<NAME> (the desktop
+#      auto-name case) via the same find_existing_dated_branch +
+#      find_worktree_for_branch pair that worktree-create.sh uses, so both
+#      sides stay in sync on what "the branch for this name" means.
 # Empty output if nothing resolved.
 resolve_worktree_from_name() {
   local repo="$1" worktrees_root="$2" name="$3" prefix rest br wt
@@ -173,7 +193,7 @@ resolve_worktree_from_name() {
     printf '%s\n' "$worktrees_root/$name"
     return 0
   fi
-  for prefix in feat hotfix; do
+  for prefix in feat hotfix claude; do
     rest="${name#${prefix}/}"
     # Only probe the prefix matching the input (or unprefixed name for
     # both, as a looser fallback). Reject unsafe segments upfront.
