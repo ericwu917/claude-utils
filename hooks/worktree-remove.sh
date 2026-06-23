@@ -57,7 +57,7 @@ fi
 # run `git worktree remove` or `git branch -D` from here directly. Resolve the
 # main repo root (first entry in `git worktree list --porcelain`) and run all
 # destructive git ops there via `git -C`.
-MAIN_REPO="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+MAIN_REPO="$(git worktree list --porcelain | awk '/^worktree /{print substr($0, 10); exit}')"
 if [[ -z "$MAIN_REPO" ]] || [[ ! -d "$MAIN_REPO" ]]; then
   say "could not determine main repo root"
   exit 1
