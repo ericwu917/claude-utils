@@ -95,7 +95,7 @@ hook_foreign_commands() {
 }
 
 upsert_hook() {
-  local event="$1" script_path="$2" timeout="$3"
+  local event="$1" script_path="$2" timeout="$3" matcher="${4:-}"
   local script_basename="${script_path##*/}"
   local foreign
   foreign="$(hook_foreign_commands "$event" "$script_basename" || true)"
@@ -105,15 +105,19 @@ upsert_hook() {
     warn "  Skipping $event. See $MERGE_DOC for manual merge."
     return 1
   fi
+  # matcher (4th arg, optional) scopes tool-level events like PreToolUse to
+  # specific tools; the worktree-lifecycle events pass none and get a bare entry.
   jq --arg e "$event" \
      --arg cmd "$script_path" \
      --argjson timeout "$timeout" \
-     --arg s "$script_basename" '
+     --arg s "$script_basename" \
+     --arg matcher "$matcher" '
     .hooks //= {}
     | .hooks[$e] = (
         ((.hooks[$e] // [])
           | map(select((.hooks // []) | all((.command // "") | test("/" + $s + "$") | not))))
-        + [ { hooks: [ { type: "command", command: $cmd, timeout: $timeout } ] } ]
+        + [ (if $matcher == "" then {} else { matcher: $matcher } end)
+            + { hooks: [ { type: "command", command: $cmd, timeout: $timeout } ] } ]
       )
   ' "$TMP" > "$TMP.new"
   mv "$TMP.new" "$TMP"
@@ -126,8 +130,12 @@ if [[ $INSTALL_HOOKS -eq 1 ]]; then
   # Stop fires when CC finishes a reply; last-reply.sh timestamps the session
   # so statusline can show "⏱ HH:MM (Xh ago)". Short timeout — trivial write.
   upsert_hook Stop "$REPO_ROOT/hooks/last-reply.sh" 5 || hooks_ok=0
+  # PreToolUse guard: ask before edits whose target is outside the active
+  # worktree root (the "in a worktree, editing the parent repo" bleed). Scoped
+  # to the file-editing tools via matcher.
+  upsert_hook PreToolUse "$REPO_ROOT/hooks/guard-worktree-edits.sh" 10 "Edit|Write|MultiEdit|NotebookEdit" || hooks_ok=0
   if [[ $hooks_ok -eq 1 ]]; then
-    log "✓ hooks: WorktreeCreate, WorktreeRemove, Stop → $REPO_ROOT/hooks/"
+    log "✓ hooks: WorktreeCreate, WorktreeRemove, Stop, PreToolUse → $REPO_ROOT/hooks/"
   fi
 fi
 
