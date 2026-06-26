@@ -51,6 +51,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **拿不到桌面的 "Branch prefix" 配置**：桌面设置里的 Branch prefix（默认 `claude/`）存在 app 内部状态里，不落在任何可读的 JSON（`settings.json` / `~/.claude.json` / `Application Support/Claude/*.json` / Local Storage 都没有），hook 读不到，所以这里的 `claude/` 是写死的、用来对齐桌面默认值。桌面的 `git-worktrees.json`（含 `branch` + `sourceBranch`）由桌面的 local-agent 路径写，那条路径**不触发本 hook**，跟 hook 路径完全不重叠，别指望从那里取值。
 
+## `guard-worktree-edits.sh`（PreToolUse 编辑越界守卫）
+
+挂在 `PreToolUse`（matcher `Edit|Write|MultiEdit|NotebookEdit`），把文件编辑**锁在当前 worktree/repo 根内**：目标落在根外就返回 `permissionDecision: ask`，让 CC 弹确认，而不是 auto mode 静默放行。治的是"人在 worktree 里、却误改父 repo 文件"这类 bleed —— prose 警告（在 CLAUDE.md 里写一条）拦不住 LLM 的路径混淆，auto-mode classifier 也只看信任边界、不看"worktree vs 主 repo"，只有确定性 hook 才拦得住。
+
+**锚点**：`git -C "$cwd" rev-parse --show-toplevel`。在 worktree 里它返回 worktree 自己，所以嵌套布局 `<主repo>/.claude/worktrees/<branch>/` 反而帮忙 —— 父 repo 文件在这个根**之上**，自然落在 prefix 外。
+
+**为什么保留嵌套布局、没把 worktree 挪到 repo 外**（实测结论，反直觉，务必记住）：CC 发现项目级 skill/agent/command 是"从 cwd 沿父目录向上走到 repo 根为止"的**文件系统遍历**（官方文档），settings 不向上合并。所以 worktree 能用到的项目 `.claude/` 配置 = 它自己 checkout 出来的（tracked 的）+ **沿祖先目录找到的主 repo 的（untracked 的）**。本仓库作者**绝大多数项目的 `.claude/` 不 track** —— 这些 untracked skill/agent 只有在 worktree **嵌套在主 repo 内**（主 repo 是其文件系统祖先）时才被加载；一旦把 worktree 挪到 repo 外（sibling），主 repo 不再是祖先，这些 untracked 配置全部失效。**所以嵌套是有意保留的，guard 是配套兜底**，不是退而求其次。
+
+**白名单（放行不弹）**：当前 worktree 根内、临时目录（`$TMPDIR`/`/tmp`/scratchpad）、`~/.claude`、主 repo 的 `.claude/`（但 `.claude/worktrees/` 例外 —— 改到**别的** worktree 仍弹）。
+
+**契约要点**：
+- stdout 只能是空（allow）或单个 JSON（ask）；所有诊断写 `$LOG`，绝不写 stdout，否则 CC 解析不了。
+- 不用 `set -e`、永远 `exit 0`：任何内部出错都 fail-open（放行），绝不卡死用户编辑。
+- 单次 jq 抽字段；`git worktree list`（算主 repo 白名单）延后到"确实在 worktree 外"才调，worktree 内编辑（常见情况）只付一次 `git rev-parse`。
+- `DEBUG`：`1` 记每次调用（params + 判定，验证用），`0` 只记 ask。日志在 `~/.claude/worktree-guard.log`（独立于 `worktree-hook.log`）。
+
 ## 版本与 commit 约定
 
 - **Commit message**：走 [Conventional Commits](https://www.conventionalcommits.org/)。常用前缀 `feat:` / `fix:` / `docs:` / `refactor:` / `chore:`。破坏性变更在 footer 写 `BREAKING CHANGE:`，或前缀带 `!`（例 `feat(hooks)!:`）。
