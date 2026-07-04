@@ -62,11 +62,6 @@ USED=$(( PCT * CTX_SIZE / 100 ))
 USED_FMT=$(fmt_tokens "$USED")
 CTX_FMT=$(fmt_tokens "$CTX_SIZE")
 
-# Usable context ratio (80% of total is practical limit)
-USABLE_RATIO=80
-USABLE_PCT=$(( PCT * 100 / USABLE_RATIO ))
-[ "$USABLE_PCT" -gt 100 ] && USABLE_PCT=100
-
 # Bar color for percentage
 bar_color() {
     local pct=$1
@@ -453,8 +448,7 @@ LINE1="${LINE1} ${DIM}|${RESET} ${FILE_COUNT} files ${GREEN}+${DIFF_ADD}${RESET}
 LINE1="${LINE1} ${DIM}|${RESET} ${CACHE_FMT}"
 LINE1="${LINE1} ${DIM}|${RESET} ${YELLOW}${COST_FMT}${RESET}${DIM}/${RESET}${DIM}${TODAY_FMT}${RESET}${DIM}/${RESET}${DIM}${MONTH_FMT}${RESET}"
 
-USABLE_COLOR=$(bar_color "$USABLE_PCT")
-LINE2="${BAR} ${BAR_COLOR}${PCT}%${RESET} ${USABLE_COLOR}[${USABLE_PCT}%]${RESET} ${DIM}(${USED_FMT}/${CTX_FMT})${RESET}"
+LINE2="${BAR} ${BAR_COLOR}${PCT}%${RESET} ${DIM}(${USED_FMT}/${CTX_FMT})${RESET}"
 LINE2="${LINE2} ${DIM}|${RESET} ${FIVE_H_FMT}"
 LINE2="${LINE2} ${DIM}|${RESET} ${SEVEN_D_FMT}"
 LINE2="${LINE2} ${DIM}|${RESET} ${API_FMT} ${DIM}/${RESET} ${WALL_FMT}"
