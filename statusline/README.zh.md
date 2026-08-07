@@ -31,7 +31,7 @@
 | `████░░░░ 35% (70k/200k)` | 上下文窗口用量（20 字符宽） |
 | `5h ██░│░░░ 27% (3h12m)` | 5 小时滚动窗口用量（10 字符宽） |
 | `7d ████░│░░░░░░ 30% (5d8h)` | 7 天窗口用量（14 字符宽） |
-| `⏱ 14:32` | 当前会话里 CC 上次回复的时间（挂钟 `HH:MM`）。由 `Stop` hook `hooks/last-reply.sh` 提供；hook 至少触发过一次之前整段不显示。 |
+| `⏱ 08-07.14:32` | 当前会话里 CC 上次回复的时间（挂钟 `MM-DD.HH:MM`）。由 `Stop` hook `hooks/last-reply.sh` 提供；hook 至少触发过一次之前整段不显示。 |
 
 ## 核心特性
 
@@ -112,7 +112,7 @@
 
 ### 上次回复时间戳
 
-第二行末尾的 `⏱ HH:MM` 显示**当前会话里 CC 最近一次回复完的时间**。由 `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh) 每次回复后往 `~/.claude/session-meta/<session_id>/last-reply.json` 写时间戳驱动；hook 至少触发过一次之前这一段不显示。
+第二行末尾的 `⏱ MM-DD.HH:MM` 显示**当前会话里 CC 最近一次回复完的时间**。由 `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh) 每次回复后往 `~/.claude/session-meta/<session_id>/last-reply.json` 写时间戳驱动；hook 至少触发过一次之前这一段不显示。
 
 per-session 设计，并发多个会话各显示各的；hook 还会顺手清掉空闲 30 天以上的 session 目录，不会无限膨胀。
 

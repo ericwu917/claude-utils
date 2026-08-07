@@ -55,14 +55,14 @@ git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/clau
 
 ### hooks/last-reply.sh — `Stop`
 
-记录当前会话里 CC 上一次回复完的时间，让 `statusline/statusline.sh` 可以在第二行尾部显示 `⏱ HH:MM`。
+记录当前会话里 CC 上一次回复完的时间，让 `statusline/statusline.sh` 可以在第二行尾部显示 `⏱ MM-DD.HH:MM`。
 
 状态文件在 `~/.claude/session-meta/<session_id>/last-reply.json`（`{"at": <epoch>}`）。布局是"一个 session 一个目录，一个 feature 一个文件"；以后再有 hook 想写 `last-user-prompt.json` 之类的，直接塞旁边，不用协调命名。超过 30 天没动的 session 目录每次 Stop 自动清掉。写入原子；hook 永远 `exit 0`，绝不卡住回复；偶发错误写 `~/.claude/last-reply-hook.log`。
 
 ### statusline/statusline.sh — 双行状态栏
 
 第一行：模型、目录、git 分支 + diff、缓存命中率、费用 / API 时间 / 墙钟时间。
-第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续）。装了上面 Stop hook 时，尾部还会多一段 `⏱ HH:MM`。
+第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续）。装了上面 Stop hook 时，尾部还会多一段 `⏱ MM-DD.HH:MM`。
 
 详见 [`statusline/README.md`](statusline/README.md)。
 

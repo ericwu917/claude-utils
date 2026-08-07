@@ -31,7 +31,7 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 | `████░░░░ 35% (70k/200k)` | Context window usage (20-char bar) |
 | `5h ██░│░░░ 27% (3h12m)` | 5-hour rolling-window usage (10-char bar) |
 | `7d ████░│░░░░░░ 30% (5d8h)` | 7-day window usage (14-char bar) |
-| `⏱ 14:32` | When CC last finished replying in this session (wall-clock `HH:MM`). Populated by the `Stop` hook `hooks/last-reply.sh`; hidden until that hook has fired at least once. |
+| `⏱ 08-07.14:32` | When CC last finished replying in this session (wall-clock `MM-DD.HH:MM`). Populated by the `Stop` hook `hooks/last-reply.sh`; hidden until that hook has fired at least once. |
 
 ## Core features
 
@@ -112,7 +112,7 @@ If none of those exist, or stdin has no `version` field (older CC builds), the `
 
 ### Last-reply timestamp
 
-`⏱ HH:MM` at the tail of line 2 shows **when CC last finished replying** in the current session. Populated by the `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh), which stamps `~/.claude/session-meta/<session_id>/last-reply.json` on every reply. The segment is hidden until that hook has fired at least once.
+`⏱ MM-DD.HH:MM` at the tail of line 2 shows **when CC last finished replying** in the current session. Populated by the `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh), which stamps `~/.claude/session-meta/<session_id>/last-reply.json` on every reply. The segment is hidden until that hook has fired at least once.
 
 Per-session, so concurrent sessions each show their own last-reply time; the hook also prunes session dirs idle > 30 days so state never grows unbounded.
 

@@ -55,14 +55,14 @@ Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty work
 
 ### hooks/last-reply.sh — `Stop`
 
-Records when CC last finished replying in the current session so `statusline/statusline.sh` can render a `⏱ HH:MM` segment at the tail of line 2.
+Records when CC last finished replying in the current session so `statusline/statusline.sh` can render a `⏱ MM-DD.HH:MM` segment at the tail of line 2.
 
 State lives under `~/.claude/session-meta/<session_id>/last-reply.json` (shape `{"at": <epoch>}`). Layout is one directory per session with one file per "feature"; follow-up hooks can drop their own files (`last-user-prompt.json`, etc.) alongside without coordinating. Session directories idle > 30 days are pruned on every Stop. Writes are atomic; the hook always `exit 0` so it can never stall a reply; rare errors go to `~/.claude/last-reply-hook.log`.
 
 ### statusline/statusline.sh — dual-line statusline
 
 Line 1: model, directory, git branch + diff, cache hit rate, cost / API time / wall time.
-Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable. Plus `⏱ HH:MM` at the tail when the Stop hook above is installed.
+Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable. Plus `⏱ MM-DD.HH:MM` at the tail when the Stop hook above is installed.
 
 Full details: [`statusline/README.md`](statusline/README.md).
 

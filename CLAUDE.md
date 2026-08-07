@@ -59,13 +59,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **为什么保留嵌套布局、没把 worktree 挪到 repo 外**（实测结论，反直觉，务必记住）：CC 发现项目级 skill/agent/command 是"从 cwd 沿父目录向上走到 repo 根为止"的**文件系统遍历**（官方文档），settings 不向上合并。所以 worktree 能用到的项目 `.claude/` 配置 = 它自己 checkout 出来的（tracked 的）+ **沿祖先目录找到的主 repo 的（untracked 的）**。本仓库作者**绝大多数项目的 `.claude/` 不 track** —— 这些 untracked skill/agent 只有在 worktree **嵌套在主 repo 内**（主 repo 是其文件系统祖先）时才被加载；一旦把 worktree 挪到 repo 外（sibling），主 repo 不再是祖先，这些 untracked 配置全部失效。**所以嵌套是有意保留的，guard 是配套兜底**，不是退而求其次。
 
-**白名单（放行不弹）**：当前 worktree 根内、临时目录（`$TMPDIR`/`/tmp`/scratchpad）、`~/.claude`、主 repo 的 `.claude/`（但 `.claude/worktrees/` 例外 —— 改到**别的** worktree 仍弹）。
+**判定模型**：**主 repo 也只是一棵 tree**。任何 session 只能改自己 tree 根下的文件，跨 tree 一律 ask —— **双向**：worktree → 父 repo 仓内文件要弹，主 repo → 任意 worktree 的文件同样要弹。实现上就是 `in-root` 放行时把本根自己的 `.claude/worktrees/`（那底下是别的 tree）挖掉。
+
+**白名单（放行不弹）**：当前 tree 根内（除去本根的 `.claude/worktrees/`）、临时目录（`$TMPDIR`/`/tmp`/scratchpad）、`~/.claude`、主 repo 的 `.claude/`（同样除去 `.claude/worktrees/`）。
+
+> **"主 repo" 必须从路径切、不能问 git**（踩过的坑）：`<主repo>` 取自 `ROOT` 里 `/.claude/worktrees/` 左边那一截，因为需求要的是"CC 沿文件系统祖先加载 skill/agent 的那个目录"。别用 `git worktree list` 第一条 —— 它回答的是另一个问题（git 心目中的主工作树），算法是 common gitdir 的 realpath 去掉结尾 `/.git`；仓库若以 `--separate-git-dir` 建立（`.git` 是文件、gitdir 另有其名），它报出的是 gitdir 本身，白名单永远匹配不上，主 repo 的 `.claude/skills` 会一直弹。也别改用 `rev-parse --show-toplevel`：在 worktree 里它返回 worktree 自己，白名单会退化成死代码。根本原因是**从 linked worktree 内部，git 没有任何指回主工作树的记录**，这个信息只存在于路径里。`git worktree list` 仅作非约定布局的兜底。
 
 **契约要点**：
 - stdout 只能是空（allow）或单个 JSON（ask）；所有诊断写 `$LOG`，绝不写 stdout，否则 CC 解析不了。
 - 不用 `set -e`、永远 `exit 0`：任何内部出错都 fail-open（放行），绝不卡死用户编辑。
-- 单次 jq 抽字段；`git worktree list`（算主 repo 白名单）延后到"确实在 worktree 外"才调，worktree 内编辑（常见情况）只付一次 `git rev-parse`。
-- `DEBUG`：`1` 记每次调用（params + 判定，验证用），`0` 只记 ask。日志在 `~/.claude/worktree-guard.log`（独立于 `worktree-hook.log`）。
+- 单次 jq 抽字段；worktree 内编辑（常见情况）只付一次 `git rev-parse`，`git worktree list` 只在非约定布局的兜底分支才调。
+- `DEBUG`：`1` 记每次调用（params + 判定，验证用）但**跳过 `in-root`** —— 那是绝大多数真实流量、没有信息量，记了会淹掉日志；`0` 只记 ask。日志在 `~/.claude/worktree-guard.log`（独立于 `worktree-hook.log`）。
 
 ## 版本与 commit 约定
 

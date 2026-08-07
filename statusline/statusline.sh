@@ -368,8 +368,8 @@ DIFF_DEL=$(echo "$SHORTSTAT" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')
 FILE_COUNT=${FILE_COUNT:-0}; DIFF_ADD=${DIFF_ADD:-0}; DIFF_DEL=${DIFF_DEL:-0}
 
 # Last-reply timestamp (written by hooks/last-reply.sh on every Stop event).
-# Rendered unconditionally as plain "⏱ HH:MM" — no date, no delta, no
-# threshold. Every delta-based rule we tried (Xh-ago, just-now, same-day
+# Rendered unconditionally as plain "⏱ MM-DD.HH:MM" — absolute stamp, no
+# delta, no threshold. Every delta-based rule we tried (Xh-ago, just-now, same-day
 # vs cross-day, hide-past-24h) turned out to be the same trap: the
 # statusline only re-renders on interaction, and re-renders within seconds
 # of the reply, so any check on NOW - LAST_REPLY_AT is computed while the
@@ -384,7 +384,7 @@ if [ -n "$SESSION_ID" ]; then
     if [ -f "$LAST_REPLY_FILE" ]; then
         LAST_REPLY_AT=$(jq -r '.at // empty' "$LAST_REPLY_FILE" 2>/dev/null)
         if [ -n "$LAST_REPLY_AT" ]; then
-            LAST_REPLY_FMT="⏱ $(date -r "$LAST_REPLY_AT" +%H:%M 2>/dev/null)"
+            LAST_REPLY_FMT="⏱ $(date -r "$LAST_REPLY_AT" +%m-%d.%H:%M 2>/dev/null)"
         fi
     fi
 fi
