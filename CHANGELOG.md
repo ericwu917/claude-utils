@@ -10,6 +10,12 @@ schema shifts) may land in minor versions.
 ## [Unreleased]
 
 ### Added
+- `hooks/worktree-create.sh`: `feature/<rest>` (git-flow's default prefix)
+  now follows the same rules as `feat/<rest>` — branch
+  `feature/<YYMMDD>-<rest>` off `origin/develop`, worktree at
+  `feature/<YYMMDD>-<rest>/`, and an existing `feature/<date>-<rest>` from
+  any day is reused. `worktree-remove.sh` treats these branches as
+  hook-managed.
 - `statusline/statusline.sh`: model bracket now shows the running Claude Code
   CLI version (`[Opus 4.7 v2.1.139]`), sourced from the new `version` field
   on the stdin payload. When a strictly newer CC is already installed on

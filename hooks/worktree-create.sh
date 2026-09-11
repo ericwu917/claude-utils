@@ -7,6 +7,7 @@
 #   Naming convention (on first creation):
 #     input name      branch                            path under .claude/worktrees/
 #     feat/<rest>     feat/<YYMMDD>-<rest>   (develop)  feat/<YYMMDD>-<rest>/
+#     feature/<rest>  feature/<YYMMDD>-<rest> (develop) feature/<YYMMDD>-<rest>/
 #     hotfix/<rest>   hotfix/<YYMMDD>-<rest> (master)   hotfix/<YYMMDD>-<rest>/
 #     <slug> *        claude/<YYMMDD>-<slug> (HEAD)     <YYMMDD>-<slug>/  (desktop auto-name)
 #     <other>         worktree-<name>        (HEAD)     <name>/    (matches CC default)
@@ -20,7 +21,7 @@
 #   `git branch`) resolves to the same worktree as `claude -w foo`.
 #
 #   Reuse semantics (#3):
-#     - A matching feat/*-<rest> (or hotfix/*-<rest>) branch from any day is
+#     - A matching feat/*-<rest> (or feature/*-, hotfix/*-<rest>) branch from any day is
 #       reused in preference to stamping today's date on a new branch.
 #     - If the branch exists but no worktree holds it, we attach a new
 #       worktree at the standard path.
@@ -78,16 +79,19 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 TODAY="$(date +%y%m%d)"
 
 case "$NAME" in
-  feat/*)
-    REST="${NAME#feat/}"
+  feat/*|feature/*)
+    # feature/ is git-flow's default spelling of feat/; same rules, and the
+    # input's own prefix is kept on the branch.
+    PREFIX="${NAME%%/*}"
+    REST="${NAME#*/}"
     is_safe_name_segment "$REST" \
-      || die "feat name '$REST' must be non-empty and must not contain '/' or '..'"
-    EXISTING="$(find_existing_dated_branch "$REPO_ROOT" feat "$REST")"
+      || die "$PREFIX name '$REST' must be non-empty and must not contain '/' or '..'"
+    EXISTING="$(find_existing_dated_branch "$REPO_ROOT" "$PREFIX" "$REST")"
     if [[ -n "$EXISTING" ]]; then
       BRANCH="$EXISTING"
       log "reusing existing branch $BRANCH for input $NAME"
     else
-      BRANCH="feat/${TODAY}-${REST}"
+      BRANCH="${PREFIX}/${TODAY}-${REST}"
     fi
     BASE="origin/develop"
     ;;

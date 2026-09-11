@@ -44,6 +44,7 @@ git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/clau
 | 输入 name | 实际 branch | base |
 |---|---|---|
 | `feat/<rest>` | `feat/YYMMDD-<rest>` | `origin/develop` |
+| `feature/<rest>` | `feature/YYMMDD-<rest>` | `origin/develop` |
 | `hotfix/<rest>` | `hotfix/YYMMDD-<rest>` | `origin/master` |
 | 其他 | `worktree-<name>` | `origin/HEAD`（fallback） |
 

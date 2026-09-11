@@ -44,6 +44,7 @@ Prefix-driven base branch selection, plus a date stamp:
 | Input `name` | Branch | Base |
 |---|---|---|
 | `feat/<rest>` | `feat/YYMMDD-<rest>` | `origin/develop` |
+| `feature/<rest>` | `feature/YYMMDD-<rest>` | `origin/develop` |
 | `hotfix/<rest>` | `hotfix/YYMMDD-<rest>` | `origin/master` |
 | anything else | `worktree-<name>` | `origin/HEAD` (fallback) |
 

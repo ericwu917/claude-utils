@@ -155,6 +155,7 @@ branch_is_safely_preserved() {
 # naming conventions:
 #   worktree-<name>          (plain case)
 #   feat/<6-digit>-<rest>    (feat case, date-stamped)
+#   feature/<6-digit>-<rest> (feature case, date-stamped; same rules as feat)
 #   hotfix/<6-digit>-<rest>  (hotfix case, date-stamped)
 #   claude/<6-digit>-<rest>  (desktop auto-name case, date-stamped)
 #
@@ -174,6 +175,7 @@ is_hook_managed_branch() {
     worktree-?*) return 0 ;;
   esac
   [[ "$br" =~ ^feat/[0-9]{6}- ]] && return 0
+  [[ "$br" =~ ^feature/[0-9]{6}- ]] && return 0
   [[ "$br" =~ ^hotfix/[0-9]{6}- ]] && return 0
   [[ "$br" =~ ^claude/[0-9]{6}- ]] && return 0
   return 1
@@ -182,7 +184,7 @@ is_hook_managed_branch() {
 # Resolve the worktree path for a name given during WorktreeRemove.
 # Strategy:
 #   1. If NAME is the default layout (.claude/worktrees/<NAME>), use that.
-#   2. Otherwise try feat/<NAME>, hotfix/<NAME> and claude/<NAME> (the desktop
+#   2. Otherwise try feat/<NAME>, feature/<NAME>, hotfix/<NAME> and claude/<NAME> (the desktop
 #      auto-name case) via the same find_existing_dated_branch +
 #      find_worktree_for_branch pair that worktree-create.sh uses, so both
 #      sides stay in sync on what "the branch for this name" means.
@@ -193,7 +195,7 @@ resolve_worktree_from_name() {
     printf '%s\n' "$worktrees_root/$name"
     return 0
   fi
-  for prefix in feat hotfix claude; do
+  for prefix in feat feature hotfix claude; do
     rest="${name#${prefix}/}"
     # Only probe the prefix matching the input (or unprefixed name for
     # both, as a looser fallback). Reject unsafe segments upfront.

@@ -41,6 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 输入 `name` | Branch | Base | Worktree 目录 |
 |---|---|---|---|
 | `feat/<rest>` | `feat/<YYMMDD>-<rest>` | `origin/develop` | `feat/<YYMMDD>-<rest>/` |
+| `feature/<rest>` | `feature/<YYMMDD>-<rest>` | `origin/develop` | `feature/<YYMMDD>-<rest>/` |
 | `hotfix/<rest>` | `hotfix/<YYMMDD>-<rest>` | `origin/master` | `hotfix/<YYMMDD>-<rest>/` |
 | `<slug>`（desktop 自动名）| `claude/<YYMMDD>-<slug>` | `origin/HEAD` | `<YYMMDD>-<slug>/` |
 | 其他 | `worktree-<name>` | `origin/HEAD`（fallback） | `<name>/` |

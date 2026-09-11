@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # WorktreeRemove hook: cleans up worktrees created by worktree-create.sh.
 #   - Acts only on worktrees whose checked-out branch matches our naming
-#     convention (worktree-*, feat/<date>-*, hotfix/<date>-*). A worktree the
+#     convention (worktree-*, feat/<date>-*, feature/<date>-*, hotfix/<date>-*). A worktree the
 #     create hook merely *entered* on an exact path match (e.g. `claude -w
 #     master` landing on a worktree checked out to main) is left untouched.
 #   - Removes the worktree (without --force; dirty/untracked preserved).
