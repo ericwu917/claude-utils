@@ -57,6 +57,62 @@ die() {
   exit 1
 }
 
+# Local-scope MCP servers (`claude mcp add`'s default scope) live in
+# ~/.claude.json under projects["<dir>"].mcpServers, keyed by directory, so a
+# worktree — its own project entry — starts with none. Copy the parent repo's
+# into the worktree's .mcp.json (project scope) so they follow it. Never write
+# ~/.claude.json itself: the parent session may be rewriting it concurrently.
+#
+#   - Parent candidates: $REPO_ROOT, then the main repo cut from the path (when
+#     the session itself sits in a .claude/worktrees/ worktree). None → no-op.
+#   - Existing .mcp.json is merged; the parent's entries win on a name clash so
+#     re-entering picks up changes (a new IDE port, a rotated key). A
+#     hand-written entry of the same name gets overwritten; others are kept.
+#   - A tracked .mcp.json is left alone: merging would dirty a tracked file
+#     (and a dirty worktree survives worktree-remove.sh). Skipped + logged.
+#   - An untracked one is hidden via info/exclude so it neither shows in
+#     `git status` nor blocks `git worktree remove`. info/exclude lives in the
+#     common gitdir, so the `/.mcp.json` line (never removed) covers the main
+#     checkout and every worktree: a root .mcp.json created there is silently
+#     skipped by `git add .` (needs -f), and a hand-written untracked one in any
+#     worktree is deleted with it by worktree-remove.sh instead of preserved.
+#   - Secrets: local scope often carries keys in env/headers. The copy sits in
+#     the worktree, kept out of commits only by that exclude (`git add -f`
+#     still adds it).
+#
+# Best-effort: returns non-zero on failure, caller logs and carries on — a
+# missing MCP config must never abort worktree creation.
+mirror_local_mcp_servers() {
+  local wt="$1" target="$1/.mcp.json" servers exclude tmp
+  servers="$(jq -c 'first(.projects[$ARGS.positional[]].mcpServers // empty | select(length > 0))' \
+               "$HOME/.claude.json" --args "$REPO_ROOT" "${REPO_ROOT%%/.claude/worktrees/*}" 2>/dev/null)" \
+    || return 1
+  [[ -n "$servers" ]] || return 0
+
+  if git -C "$wt" ls-files --error-unmatch .mcp.json >/dev/null 2>&1; then
+    log "skip MCP mirror: $target is tracked"
+    return 0
+  fi
+
+  tmp="$target.tmp.$$"
+  if [[ -f "$target" ]]; then
+    jq --argjson s "$servers" '.mcpServers = (.mcpServers // {}) + $s' "$target" > "$tmp"
+  else
+    jq -n --argjson s "$servers" '{mcpServers: $s}' > "$tmp"
+  fi || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$target" || return 1
+
+  exclude="$(git -C "$wt" rev-parse --path-format=absolute --git-path info/exclude)" || return 1
+  mkdir -p "$(dirname "$exclude")" || return 1
+  if ! grep -qxF '/.mcp.json' "$exclude" 2>/dev/null; then
+    # No trailing newline would glue our line onto the file's last pattern.
+    [[ -s "$exclude" && -n "$(tail -c1 "$exclude")" ]] && echo >> "$exclude"
+    echo '/.mcp.json' >> "$exclude" || return 1
+  fi
+
+  log "mirrored local MCP servers $(jq -c keys <<<"$servers") into $target"
+}
+
 NAME="$(jq_first '.name' '.tool_input.name' '.toolInput.name' '.worktreeName' '.hookSpecificOutput.name')"
 CWD="$(jq_first '.cwd')"
 # Empty transcript_path is the tell-tale of a desktop-auto worktree (no session
@@ -173,6 +229,7 @@ if [[ -d "$WT_PATH" ]]; then
   else
     log "entering existing worktree at $WT_PATH (branch ${BRANCH_AT_PATH:-detached HEAD}, not $BRANCH)"
   fi
+  mirror_local_mcp_servers "$WT_PATH" || log "WARN: MCP mirror failed for $WT_PATH"
   echo "$WT_PATH"
   exit 0
 fi
@@ -190,6 +247,7 @@ if branch_exists "$REPO_ROOT" "$BRANCH"; then
     WT_ROOT="$REPO_ROOT/.claude/worktrees"
     if [[ "$OTHER_WT" == "$WT_ROOT"/* ]]; then
       log "falling back to existing worktree $OTHER_WT for $NAME (branch $BRANCH)"
+      mirror_local_mcp_servers "$OTHER_WT" || log "WARN: MCP mirror failed for $OTHER_WT"
       echo "$OTHER_WT"
       exit 0
     fi
@@ -218,6 +276,8 @@ else
   git -C "$REPO_ROOT" worktree add -b "$BRANCH" "$WT_PATH" "$BASE" >&2
   log "created new branch $BRANCH at $WT_PATH from $BASE"
 fi
+
+mirror_local_mcp_servers "$WT_PATH" || log "WARN: MCP mirror failed for $WT_PATH"
 
 # stdout = the absolute worktree path Claude Code should chdir into.
 echo "$WT_PATH"

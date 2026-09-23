@@ -50,6 +50,8 @@ Prefix-driven base branch selection, plus a date stamp:
 
 Example: `claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s2`, worktree at `<repo>/.claude/worktrees/feat/260418-kill-mutants-s2/`. If the expected base is missing (e.g. the repo has no `origin/develop`), the hook falls back to `origin/HEAD` — so it stays useful in projects that don't follow git-flow.
 
+Local-scope MCP servers follow the worktree: local scope (`claude mcp add`'s default) is keyed by directory in `~/.claude.json`, so a worktree would otherwise start with none. The hook copies the parent repo's `projects["<repo>"].mcpServers` into the worktree's `.mcp.json` (merging into an existing untracked one; a tracked `.mcp.json` is left alone) and hides it via `info/exclude`. Project-scope servers need approval once per directory, i.e. per worktree — to skip that for servers you trust, list their names under `enabledMcpjsonServers` in `~/.claude/settings.json`.
+
 ### hooks/worktree-remove.sh — `WorktreeRemove`
 
 Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty worktrees are preserved) + `git branch -D` (**only if the branch's tip is already merged into `develop` / `master` / `main` or reachable from any remote ref**) + empty-parent-directory cleanup. Unmerged, unpushed branches are kept — `branch -D` is force-delete, so dropping a branch whose commits live only there would lose work. Re-invoking `claude -w <same-name>` later reattaches a worktree via the create hook's reuse path. Because CC invokes this hook with cwd set to the worktree being removed, every destructive git op is routed through `git -C "$MAIN_REPO"` — git refuses to self-delete its cwd or a checked-out branch, so the hook does the work from the main repo instead.

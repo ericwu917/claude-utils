@@ -50,6 +50,8 @@ git clone --depth 1 https://github.com/ericwu917/claude-utils.git ~/.claude/clau
 
 示例：`claude -w feat/kill-mutants-s2` → branch `feat/260418-kill-mutants-s2`，worktree 路径 `<repo>/.claude/worktrees/feat/260418-kill-mutants-s2/`。Base 不存在时自动回退到 `origin/HEAD`，保证脚本在不走 git-flow 的项目里也能用。
 
+Local scope 的 MCP server 会跟到 worktree：local scope（`claude mcp add` 的默认 scope）在 `~/.claude.json` 里按目录绑定，worktree 本来一个都没有。hook 把父仓 `projects["<repo>"].mcpServers` 复制进 worktree 的 `.mcp.json`（已有的未跟踪 `.mcp.json` 做合并；已入仓的 `.mcp.json` 不动），并用 `info/exclude` 隐藏。Project scope 的 server 每个目录（即每个 worktree）要批准一次 —— 想免批准，把信任的 server 名字写进 `~/.claude/settings.json` 的 `enabledMcpjsonServers`。
+
 ### hooks/worktree-remove.sh — `WorktreeRemove`
 
 配对清理。`git worktree remove`（**不带 `--force`**，dirty worktree 会保留）+ `git branch -D`（**仅当分支 tip 已合并进 `develop` / `master` / `main` 或存在于任一 remote ref**，否则保留分支）+ 清理空父目录。没 merge 也没 push 的分支不删 —— `branch -D` 是强制删除，删掉只存在这条分支上的 commit 就找不回来了。下次再 `claude -w <同名>` 时 create hook 的 reuse 路径会自动把 worktree 重新挂回这条分支。CC 调用此 hook 时 cwd 就是被删的 worktree 本身，所以脚本内部所有 git 写操作都通过 `git -C "$MAIN_REPO"` 从主 repo 上下文执行。
