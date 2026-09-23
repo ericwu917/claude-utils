@@ -92,10 +92,14 @@ rate_bar_color() {
     else echo "$ORANGE"; fi
 }
 
-# Rate limit bar with time marker: make_rate_bar <usage_pct> <time_pct> <width> [color_override]
-# Shows usage fill + │ marker at time position to visualize pace
+# Rate limit bar with time marker:
+#   make_rate_bar <usage_pct> <time_pct> <width> [color_override] [overlay_pos overlay_color]
+# Shows usage fill + │ marker at time position to visualize pace. The optional
+# overlay puts a ┃ in overlay_color at cell overlay_pos (used for Fable on the
+# 7d bar); on collision with the time marker the ┃ wins.
 make_rate_bar() {
     local usage_pct=$1 time_pct=$2 width=$3 color_override=$4
+    local overlay_pos=${5:--1} overlay_color=$6
     local usage_pos=$((usage_pct * width / 100))
     local time_pos=$((time_pct * width / 100))
     # Clamp time_pos
@@ -108,13 +112,18 @@ make_rate_bar() {
     # mid-codepoint leaves orphan bytes that the terminal drops, shifting the
     # bar by one column. See issue #1.
     local before="" after="" i
+    local overlay="${RESET}${overlay_color}┃${RESET}${color}"
     for (( i = 0; i < time_pos; i++ )); do
-        if [ "$i" -lt "$usage_pos" ]; then before+="█"; else before+="░"; fi
+        if [ "$i" -eq "$overlay_pos" ]; then before+="$overlay"
+        elif [ "$i" -lt "$usage_pos" ]; then before+="█"; else before+="░"; fi
     done
+    local marker="${DIM}│${RESET}"
+    [ "$time_pos" -eq "$overlay_pos" ] && marker="${overlay_color}┃${RESET}"
     for (( i = time_pos + 1; i < width; i++ )); do
-        if [ "$i" -lt "$usage_pos" ]; then after+="█"; else after+="░"; fi
+        if [ "$i" -eq "$overlay_pos" ]; then after+="$overlay"
+        elif [ "$i" -lt "$usage_pos" ]; then after+="█"; else after+="░"; fi
     done
-    echo "${color}${before}${RESET}${DIM}│${RESET}${color}${after}${RESET}"
+    echo "${color}${before}${RESET}${marker}${color}${after}${RESET}"
 }
 
 # Compact duration formatter (minute precision, two tiers):
@@ -274,6 +283,99 @@ fmt_cost_compact() {
 TODAY_FMT=$(fmt_cost_compact "$TODAY_COST")
 MONTH_FMT=$(fmt_cost_compact "$MONTH_COST")
 
+# Fable weekly usage, overlaid on the 7d bar. CC's statusline stdin doesn't
+# carry it (rate_limits projects only five_hour/seven_day/spend_limit, checked
+# through CC 2.1.280), so we read the same endpoint /usage does and cache it
+# the way the ccusage block above does: rendering only reads the cache, and a
+# cache past its TTL forks one background refresher (mkdir lock).
+USAGE_CACHE="$HOME/.claude/statusline-usage-cache.json"
+USAGE_LOCK="$HOME/.claude/statusline-usage-cache.lock"
+USAGE_TTL=${STATUSLINE_USAGE_TTL:-300}  # seconds between refresh attempts
+USAGE_STALE=3600                         # data older than this renders DIM
+
+FABLE_PCT=""; FABLE_FETCHED_AT=0; USAGE_ATTEMPTED_AT=0
+if [ -f "$USAGE_CACHE" ]; then
+    eval "$(jq -r '
+      @sh "FABLE_PCT=\(.fable.pct // "")",
+      @sh "FABLE_FETCHED_AT=\(.fetched_at // 0)",
+      @sh "USAGE_ATTEMPTED_AT=\(.attempted_at // 0)"
+    ' "$USAGE_CACHE" 2>/dev/null)"
+fi
+
+if [ -d "$USAGE_LOCK" ]; then
+    LOCK_AGE=$(( NOW - $(stat -f %m "$USAGE_LOCK") ))
+    [ "$LOCK_AGE" -gt 60 ] && rmdir "$USAGE_LOCK" 2>/dev/null
+fi
+
+# Gate on attempted_at, not fetched_at: a failed refresh (401/429/offline)
+# still bumps it, so failures back off one TTL instead of retrying every render.
+if [ $(( NOW - USAGE_ATTEMPTED_AT )) -gt "$USAGE_TTL" ] && mkdir "$USAGE_LOCK" 2>/dev/null; then
+    (
+        trap 'rmdir "$USAGE_LOCK" 2>/dev/null' EXIT
+        exec </dev/null
+        # Undocumented endpoint, so the shape is as observed: a limits[] entry
+        # with kind "weekly_scoped" and scope.model.display_name "Fable";
+        # percent is already 0-100; resets_at looks like
+        # 2026-09-30T04:00:00.373624+00:00, which fromdateiso8601 only takes
+        # after dropping the fraction and spelling UTC as Z.
+        FABLE_DEF='def fable: [.limits[]? | select(.kind == "weekly_scoped"
+                     and ((.scope.model.display_name // "") | ascii_downcase | startswith("fable")))][0]
+                   | if . == null then null else
+                       {pct: .percent,
+                        resets_at: (.resets_at | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
+                                    | try fromdateiso8601 catch null)} end;'
+        FABLE="" FETCHED="" SOURCE=""
+
+        # 1) The API, only while CC's stored token is still valid. Never
+        #    refresh it here: a refresh rotates the refresh token and would
+        #    strand CC's own copy. The token reaches curl through stdin
+        #    (--config -), so it never shows up in argv / ps.
+        TOK=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+            | jq -r --argjson now "$(date +%s)" \
+                'select((.claudeAiOauth.expiresAt // 0) / 1000 > $now + 60) | .claudeAiOauth.accessToken // empty' 2>/dev/null)
+        if [ -n "$TOK" ]; then
+            BODY=$(printf 'url = "https://api.anthropic.com/api/oauth/usage"\nheader = "Authorization: Bearer %s"\nheader = "anthropic-beta: oauth-2025-04-20"\nheader = "User-Agent: claude-utils-statusline"\n' "$TOK" \
+                | curl -sf --max-time 5 --config - 2>/dev/null)
+            # A 200 without a Fable bucket is still an answer (fable: null);
+            # only a failed call falls through to the fallback.
+            if printf '%s' "$BODY" | jq -e 'has("limits")' >/dev/null 2>&1; then
+                FABLE=$(printf '%s' "$BODY" | jq -c "$FABLE_DEF fable")
+                FETCHED=$(date +%s); SOURCE=api
+            fi
+        fi
+        unset TOK BODY
+
+        # 2) Fallback: CC keeps the same response in ~/.claude.json
+        #    (cachedUsageUtilization) whenever it fetches it itself, e.g. on
+        #    /usage. Take it only if it's this account's and newer than ours.
+        if [ -z "$SOURCE" ] && [ -f "$HOME/.claude.json" ]; then
+            CC_USAGE=$(jq -c --argjson have "$FABLE_FETCHED_AT" "$FABLE_DEF"'
+                .oauthAccount.accountUuid as $acct
+                | .cachedUsageUtilization
+                | select(. != null and .accountUuid == $acct and (.fetchedAtMs / 1000 | floor) > $have)
+                | {fetched_at: (.fetchedAtMs / 1000 | floor), fable: (.utilization | fable)}' "$HOME/.claude.json" 2>/dev/null)
+            if [ -n "$CC_USAGE" ]; then
+                FABLE=$(printf '%s' "$CC_USAGE" | jq -c '.fable')
+                FETCHED=$(printf '%s' "$CC_USAGE" | jq -r '.fetched_at')
+                SOURCE=cc_cache
+            fi
+        fi
+
+        # Atomic write (mktemp next to the cache → same filesystem → rename).
+        # No new data: keep what we had, only bump attempted_at.
+        tmp=$(mktemp "${USAGE_CACHE}.XXXXXX") || exit 0
+        if [ -n "$SOURCE" ]; then
+            jq -n --argjson f "$FABLE" --argjson t "$FETCHED" --argjson a "$(date +%s)" --arg s "$SOURCE" \
+                '{fable: $f, fetched_at: $t, attempted_at: $a, source: $s}'
+        elif [ -f "$USAGE_CACHE" ]; then
+            jq --argjson a "$(date +%s)" '.attempted_at = $a' "$USAGE_CACHE"
+        else
+            jq -n --argjson a "$(date +%s)" '{fable: null, fetched_at: null, attempted_at: $a, source: null}'
+        fi > "$tmp" && mv "$tmp" "$USAGE_CACHE" || rm -f "$tmp"
+    ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+fi
+
 # Cache hit rate (last API call). Inverse color — higher is better.
 # current_usage is null before first API call; denom will be 0 → show "--".
 CACHE_DENOM=$((CUR_INPUT + CUR_CACHE_CREATE + CUR_CACHE_READ))
@@ -313,6 +415,7 @@ else
     FIVE_H_FMT="${DIM}5h --${RESET}"
 fi
 
+SEVEN_D_WIDTH=14
 if [ -n "$SEVEN_D_PCT" ]; then
     SEVEN_D_PCT_INT=$(printf '%.0f' "$SEVEN_D_PCT")
     SEVEN_D_REMAINING=$(fmt_remaining "$SEVEN_D_RESET")
@@ -321,18 +424,34 @@ if [ -n "$SEVEN_D_PCT" ]; then
         SEVEN_D_TIME_PCT=$(calc_active_pct "$((SEVEN_D_RESET - 604800))" "$SEVEN_D_RESET" "$NOW")
         [ "$SEVEN_D_TIME_PCT" -lt 0 ] && SEVEN_D_TIME_PCT=0
         [ "$SEVEN_D_TIME_PCT" -gt 100 ] && SEVEN_D_TIME_PCT=100
-        SEVEN_D_BAR=$(make_rate_bar "$SEVEN_D_PCT_INT" "$SEVEN_D_TIME_PCT" 14)
+    fi
+    # Fable overlay: ┃ at its percentage on this bar + "fbNN%" after ours.
+    # Fable's weekly window shares 7d's resets_at, so its pace color uses the
+    # same time progress. Stale data goes DIM, which beats the off-hours red.
+    FABLE_POS=-1; FABLE_COLOR=""; FABLE_FMT="${DIM}fb--${RESET}"
+    if [ -n "$FABLE_PCT" ]; then
+        FABLE_PCT_INT=$(printf '%.0f' "$FABLE_PCT")
+        FABLE_POS=$((FABLE_PCT_INT * SEVEN_D_WIDTH / 100))
+        [ "$FABLE_POS" -ge "$SEVEN_D_WIDTH" ] && FABLE_POS=$((SEVEN_D_WIDTH - 1))
+        if [ $(( NOW - FABLE_FETCHED_AT )) -gt "$USAGE_STALE" ]; then FABLE_COLOR="$DIM"
+        elif [ "$IS_WORK_HOUR" = false ]; then FABLE_COLOR="$RED"
+        elif [ -n "$SEVEN_D_RESET" ]; then FABLE_COLOR=$(rate_bar_color "$FABLE_PCT_INT" "$SEVEN_D_TIME_PCT")
+        else FABLE_COLOR=$(bar_color "$FABLE_PCT_INT"); fi
+        FABLE_FMT="${FABLE_COLOR}fb${FABLE_PCT_INT}%${RESET}"
+    fi
+    if [ -n "$SEVEN_D_RESET" ]; then
+        SEVEN_D_BAR=$(make_rate_bar "$SEVEN_D_PCT_INT" "$SEVEN_D_TIME_PCT" "$SEVEN_D_WIDTH" "" "$FABLE_POS" "$FABLE_COLOR")
         SEVEN_D_COLOR=$(rate_bar_color "$SEVEN_D_PCT_INT" "$SEVEN_D_TIME_PCT")
     else
-        SEVEN_D_BAR=$(make_bar "$SEVEN_D_PCT_INT" 14)
+        SEVEN_D_BAR=$(make_bar "$SEVEN_D_PCT_INT" "$SEVEN_D_WIDTH")
         SEVEN_D_COLOR=$(bar_color "$SEVEN_D_PCT_INT")
     fi
     # Non-work-hour: force red for bar and percentage
     if [ "$IS_WORK_HOUR" = false ]; then
-        SEVEN_D_BAR=$(make_rate_bar "$SEVEN_D_PCT_INT" "$SEVEN_D_TIME_PCT" 14 "$RED")
+        SEVEN_D_BAR=$(make_rate_bar "$SEVEN_D_PCT_INT" "$SEVEN_D_TIME_PCT" "$SEVEN_D_WIDTH" "$RED" "$FABLE_POS" "$FABLE_COLOR")
         SEVEN_D_COLOR="$RED"
     fi
-    SEVEN_D_FMT="7d ${SEVEN_D_BAR} ${SEVEN_D_COLOR}${SEVEN_D_PCT_INT}%${RESET}"
+    SEVEN_D_FMT="7d ${SEVEN_D_BAR} ${SEVEN_D_COLOR}${SEVEN_D_PCT_INT}%${RESET} ${FABLE_FMT}"
     [ -n "$SEVEN_D_REMAINING" ] && SEVEN_D_FMT="${SEVEN_D_FMT} ${DIM}(${SEVEN_D_REMAINING})${RESET}"
 else
     SEVEN_D_FMT="${DIM}7d --${RESET}"

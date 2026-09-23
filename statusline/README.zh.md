@@ -30,7 +30,7 @@
 |------|------|
 | `████░░░░ 35% (70k/200k)` | 上下文窗口用量（20 字符宽） |
 | `5h ██░│░░░ 27% (3h12m)` | 5 小时滚动窗口用量（10 字符宽） |
-| `7d ████░│░░░░░░ 30% (5d8h)` | 7 天窗口用量（14 字符宽） |
+| `7d ████░│░░┃░░░ 30% fb62% (5d8h)` | 7 天窗口用量（14 字符宽），叠加 Fable 周用量：`┃` + `fbNN%` —— 见 [Fable 叠加](#fable-叠加) |
 | `⏱ 08-07.14:32` | 当前会话里 CC 上次回复的时间（挂钟 `MM-DD.HH:MM`）。由 `Stop` hook `hooks/last-reply.sh` 提供；hook 至少触发过一次之前整段不显示。 |
 
 ## 核心特性
@@ -89,9 +89,37 @@
 
 这样时间标记更准确地反映了"在正常使用节奏下你应该消耗多少"。
 
+### Fable 叠加
+
+7d 进度条上同时标出 Fable 自己的周额度：在 Fable 百分比的位置放一个 `┃`，并在 7d 百分比后面加 `fbNN%`。
+
+```
+7d ██████░│░░░┃░░ 43% fb80% (3d0h)    Fable 跑在时间标记前面
+7d ██┃███░│░░░░░░ 43% fb20% (3d0h)    Fable 落后于时间标记
+7d ██████░┃░░░░░░ 43% fb50% (3d0h)    和时间标记同格 → ┃ 覆盖 │
+7d ██████░│░░░░░┃ 43% fb123% (3d0h)   超过 100% → 贴最后一格
+7d ██████░│░░░░░░ 43% fb-- (3d0h)     还没有数据
+```
+
+- **两者共用一根时间标记**。Fable 周窗口和 7d 窗口在同一时刻重置，所以 `┃` 在 `│` 右边，就表示 Fable 消耗得比这一周过去得快。`┃` 和 `fbNN%` 同色，按同一个时间进度、用与其他进度条相同的规则着色。
+- **数据过期会变暗**。上次成功拉取超过 1h，`┃` 和 `fbNN%` 显示为 DIM，优先级高于非工作时段的红色。
+
+**数据从哪来**。不是 stdin：CC 的 statusline JSON 只给 `rate_limits.five_hour` / `seven_day`（查到 CC 2.1.280 为止都是这样），尽管 CC 内部其实在跟踪 Fable。脚本读的是 `/usage` 面板用的同一个端点 —— `GET https://api.anthropic.com/api/oauth/usage`，从 `limits[]` 里取 `kind: "weekly_scoped"` 且 `scope.model.display_name: "Fable"` 的那条。这个端点**没有公开文档**；它的格式一旦变了，叠加部分会先显示旧数据、再退化成 `fb--`，不会把整行搞崩。
+
+**刷新方式**（和 ccusage 花费缓存同一套结构）：
+
+- 渲染只读 `~/.claude/statusline-usage-cache.json`（只存百分比和重置时间）。
+- 距上次尝试超过 `STATUSLINE_USAGE_TTL`（默认 300s）时，起一个后台子 shell 刷新；`~/.claude/statusline-usage-cache.lock` 目录防止多个 statusline 同时刷新。失败（401 / 429 / 断网）也算一次尝试，所以失败后会退避一个 TTL，不会每次渲染都重试。
+- API 用不了时，兜底读 CC 自己在 `~/.claude.json` 里的那份（`cachedUsageUtilization`，CC 每次自己拉 usage 时写入，比如开 `/usage`）—— 只在它属于当前登录账号、且比我们的缓存新时才用。
+
+**token 处理**。刷新时读的是 CC 存在 macOS keychain（`Claude Code-credentials`）里的 OAuth access token：
+
+- token 通过 stdin 传给 `curl`（`--config -`），不出现在命令行参数里，`ps` 看不到；也不写盘、不进任何日志。
+- 脚本**绝不刷新 token**。刷新会轮换 refresh token，导致 CC 自己存的那份失效。token 过期时跳过 API，等 CC 下次发请求时自己刷新；中间这段由上面的兜底覆盖。
+
 ### 非工作时间提醒
 
-当前时间在工作时段外（默认 22:00-09:00）时，5h 和 7d 的**进度条和百分比强制显示红色**，提醒你正在非常规时段使用。
+当前时间在工作时段外（默认 22:00-09:00）时，5h 和 7d 的**进度条和百分比**（连同 Fable 叠加）**强制显示红色**，提醒你正在非常规时段使用。
 
 ### 版本升级提示
 
@@ -135,7 +163,8 @@ per-session 设计，并发多个会话各显示各的；hook 还会顺手清掉
 - jq
 - git（可选，用于显示分支和文件变更）
 - [`ccusage`](https://github.com/ryoppippi/ccusage)（可选，用于显示今日 / 本月累计花销 —— `bun add -g ccusage` 或 `npm install -g ccusage`；不装则这两格显示 `--`）
-- macOS（`date -j -f` 用于时间计算）
+- `curl` + CC 里用 Claude.ai 订阅登录（用于 [Fable 叠加](#fable-叠加)；缺了显示 `fb--`）
+- macOS（`date -j -f` 用于时间计算；Fable 叠加用 `security` 读 keychain）
 
 ### 配置
 
@@ -163,6 +192,7 @@ cp statusline.sh ~/.claude/statusline-command.sh
 | `STATUSLINE_WORK_END` | `22` | 工作时段结束（小时，0-23） |
 | `STATUSLINE_CCUSAGE_TTL` | `600` | 今日 / 本月花销后台刷新间隔（秒） |
 | `STATUSLINE_CCUSAGE_TZ` | 系统时区（读 `/etc/localtime`） | 今日 / 本月分桶使用的 IANA 时区（如 `Asia/Shanghai`），与 `ccusage --timezone` 保持一致 |
+| `STATUSLINE_USAGE_TTL` | `300` | Fable 叠加的后台刷新间隔（秒） |
 
 示例：调整为 8:00-21:00 工作时段：
 
@@ -177,6 +207,7 @@ export STATUSLINE_WORK_END=21
 
 - **今日 / 本月累计花销** —— 由 `ccusage` 扫描 `~/.claude/projects/*/*.jsonl` 而来（见上文[今日 / 本月累计花销](#今日--本月累计花销)）。
 - **上次回复时间戳** —— 从 `~/.claude/session-meta/<session_id>/last-reply.json` 读取，文件由 `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh) 每次回复后写入（见上文[上次回复时间戳](#上次回复时间戳)）。
+- **Fable 叠加** —— 从 `~/.claude/statusline-usage-cache.json` 读取，由后台从 `GET /api/oauth/usage` 刷新（见上文 [Fable 叠加](#fable-叠加)）。
 
 stdin 字段列表：
 

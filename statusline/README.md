@@ -30,7 +30,7 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 |------|------|
 | `████░░░░ 35% (70k/200k)` | Context window usage (20-char bar) |
 | `5h ██░│░░░ 27% (3h12m)` | 5-hour rolling-window usage (10-char bar) |
-| `7d ████░│░░░░░░ 30% (5d8h)` | 7-day window usage (14-char bar) |
+| `7d ████░│░░┃░░░ 30% fb62% (5d8h)` | 7-day window usage (14-char bar), with Fable's weekly usage overlaid as `┃` + `fbNN%` — see [Fable overlay](#fable-overlay) |
 | `⏱ 08-07.14:32` | When CC last finished replying in this session (wall-clock `MM-DD.HH:MM`). Populated by the `Stop` hook `hooks/last-reply.sh`; hidden until that hook has fired at least once. |
 
 ## Core features
@@ -89,9 +89,37 @@ The 7d window's time marker is not computed against wall-clock time (168h). Inst
 
 This makes the time marker reflect "at a normal usage pace, how much should I have consumed by now".
 
+### Fable overlay
+
+The 7d bar also carries Fable's own weekly limit: a `┃` at Fable's percentage, plus `fbNN%` after the 7d percentage.
+
+```
+7d ██████░│░░░┃░░ 43% fb80% (3d0h)    Fable ahead of the time marker
+7d ██┃███░│░░░░░░ 43% fb20% (3d0h)    Fable behind it
+7d ██████░┃░░░░░░ 43% fb50% (3d0h)    same cell as the time marker → ┃ wins
+7d ██████░│░░░░░┃ 43% fb123% (3d0h)   past 100% → pinned to the last cell
+7d ██████░│░░░░░░ 43% fb-- (3d0h)     no data yet
+```
+
+- **One time marker for both.** Fable's weekly window resets at the same moment as the 7d window, so `┃` right of `│` means Fable is burning faster than the week is passing. `┃` and `fbNN%` share a color, picked with the same rules as the other bars against that shared time progress.
+- **Stale data dims.** If the last successful fetch is older than 1h, `┃` and `fbNN%` render DIM. That beats the off-hours red.
+
+**Where the number comes from.** Not stdin: CC's statusline JSON only exposes `rate_limits.five_hour` / `seven_day` (checked through CC 2.1.280), even though CC tracks Fable internally. The script reads the same endpoint the `/usage` panel does — `GET https://api.anthropic.com/api/oauth/usage` — and takes the `limits[]` entry with `kind: "weekly_scoped"` and `scope.model.display_name: "Fable"`. The endpoint is **undocumented**; if its shape changes, the overlay degrades to stale data and then `fb--`, never a broken line.
+
+**Refresh model** (same shape as the ccusage cost cache):
+
+- Rendering only reads `~/.claude/statusline-usage-cache.json` (percentage + reset time, nothing else).
+- Once the last attempt is older than `STATUSLINE_USAGE_TTL` (default 300s), one background subshell refreshes it; a `~/.claude/statusline-usage-cache.lock` directory keeps concurrent statuslines from piling up. Failed attempts (401 / 429 / offline) still count as attempts, so failures back off one TTL instead of retrying every render.
+- If the API can't be used, it falls back to the copy CC itself keeps in `~/.claude.json` (`cachedUsageUtilization`, written whenever CC fetches usage, e.g. on `/usage`) — only if it's for the logged-in account and newer than what the cache has.
+
+**Token handling.** The refresher reads the OAuth access token CC stores in the macOS keychain (`Claude Code-credentials`):
+
+- The token is passed to `curl` on stdin (`--config -`), never on the command line, so it doesn't show up in `ps`. It is never written to disk or to any log.
+- The script **never refreshes the token.** Refreshing rotates the refresh token and would leave CC's own stored copy invalid. If the token has expired, the API step is skipped until CC refreshes it on its next request; the fallback above covers the gap.
+
 ### Non-working-hours warning
 
-When the current time is outside the working window (default 22:00–09:00), the 5h and 7d bars and percentages **force red**, reminding you that you're running off-hours.
+When the current time is outside the working window (default 22:00–09:00), the 5h and 7d bars and percentages — and the Fable overlay — **force red**, reminding you that you're running off-hours.
 
 ### Upgrade hint
 
@@ -135,7 +163,8 @@ Cost of the extra feature: one `ccusage` subprocess per TTL window. Everything e
 - jq
 - git (optional, for branch and diff display)
 - [`ccusage`](https://github.com/ryoppippi/ccusage) (optional, for the today / month-to-date cost display — `bun add -g ccusage` or `npm install -g ccusage`; without it, those two slots show `--`)
-- macOS (`date -j -f` is used in the active-time calculation)
+- `curl` + a Claude.ai subscription login in CC (for the [Fable overlay](#fable-overlay); without them it shows `fb--`)
+- macOS (`date -j -f` is used in the active-time calculation; `security` reads the keychain for the Fable overlay)
 
 ### Configuration
 
@@ -165,6 +194,7 @@ Cost of the extra feature: one `ccusage` subprocess per TTL window. Everything e
 | `STATUSLINE_WORK_END` | `22` | Working window end (hour, 0–23) |
 | `STATUSLINE_CCUSAGE_TTL` | `600` | Background-refresh interval for the today/month cost (seconds) |
 | `STATUSLINE_CCUSAGE_TZ` | system TZ (from `/etc/localtime`) | IANA zone (e.g. `Asia/Shanghai`) used to bucket today/month, matching what `ccusage --timezone` reports |
+| `STATUSLINE_USAGE_TTL` | `300` | Seconds between background refresh attempts for the Fable overlay |
 
 Example: set working hours to 8:00–21:00:
 
@@ -179,6 +209,7 @@ Most fields come from the JSON Claude Code pipes in on stdin. Exceptions:
 
 - **Today / month-to-date cost** — computed by `ccusage` reading `~/.claude/projects/*/*.jsonl` (see [Today & month-to-date cost](#today--month-to-date-cost) above).
 - **Last-reply timestamp** — read from `~/.claude/session-meta/<session_id>/last-reply.json`, which the `Stop` hook [`hooks/last-reply.sh`](../hooks/last-reply.sh) writes on every reply (see [Last-reply timestamp](#last-reply-timestamp) above).
+- **Fable overlay** — read from `~/.claude/statusline-usage-cache.json`, refreshed in the background from `GET /api/oauth/usage` (see [Fable overlay](#fable-overlay) above).
 
 Stdin-driven fields:
 

@@ -65,7 +65,7 @@ Local scope 的 MCP server 会跟到 worktree：local scope（`claude mcp add` �
 ### statusline/statusline.sh — 双行状态栏
 
 第一行：模型、目录、git 分支 + diff、缓存命中率、费用 / API 时间 / 墙钟时间。
-第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续）。装了上面 Stop hook 时，尾部还会多一段 `⏱ MM-DD.HH:MM`。
+第二行：上下文窗口进度条、5h/7d 速率限制进度条（叠加时间进度标记 `│`，一眼看出当前消耗速率是否可持续；7d 条上另用 `┃` 标出 Fable 周用量）。装了上面 Stop hook 时，尾部还会多一段 `⏱ MM-DD.HH:MM`。
 
 详见 [`statusline/README.md`](statusline/README.md)。
 

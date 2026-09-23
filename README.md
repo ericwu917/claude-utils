@@ -65,7 +65,7 @@ State lives under `~/.claude/session-meta/<session_id>/last-reply.json` (shape `
 ### statusline/statusline.sh — dual-line statusline
 
 Line 1: model, directory, git branch + diff, cache hit rate, cost / API time / wall time.
-Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable. Plus `⏱ MM-DD.HH:MM` at the tail when the Stop hook above is installed.
+Line 2: context window + 5h and 7d rate-limit bars, each overlaid with a time-progress marker (`│`) so you can see at a glance whether your burn rate is sustainable; the 7d bar also marks Fable's weekly usage (`┃`). Plus `⏱ MM-DD.HH:MM` at the tail when the Stop hook above is installed.
 
 Full details: [`statusline/README.md`](statusline/README.md).
 
