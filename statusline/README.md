@@ -21,6 +21,7 @@ A dual-line terminal statusline for Claude Code. Real-time view of your work env
 | `🔀 master` | Git branch |
 | `3 files +25 -10` | Uncommitted file changes (`git diff --shortstat HEAD`) |
 | `💾 95%` | Prompt cache hit rate for the **last** API call |
+| `⏳12:59 83k` / `❄cold` | Prompt cache expiry (appended to `💾`): warm until `12:59`, and losing it means re-writing 83k tokens; or already expired. See [Prompt cache expiry](#prompt-cache-expiry). |
 | `$3.42 / $54.3 / $3.2K` | Session cost **/** today's cost **/** month-to-date cost. Session is live from stdin; today & month come from [`ccusage`](https://github.com/ryoppippi/ccusage) (optional — displays `--` if not installed). Compact `$` format: `$X.XX` < 10, `$XX.X` < 100, `$XXX` < 1000, `$X.XK` ≥ 1000. |
 | `4h10m / 1d2h` | Cumulative API wait time **/** session wall-clock time. Compact duration format: `<24h` → `XhYm`, `≥24h` → `XdYh` (minute precision; same formatter drives the `5h`/`7d` countdowns). |
 
@@ -78,6 +79,14 @@ Thresholds (calibrated against observed Claude Code steady state, **not an Anthr
 | < 50% | 🔴 red | first turn / `/clear` just ran / >5min idle / cache genuinely broken |
 
 Things that break the cache mid-session: editing `CLAUDE.md` / `settings.json` / hooks, loading or unloading an MCP server, switching model or permission mode, frequent `/clear`, spawning many sub-agents (each starts cold), leaving the session idle for >5 minutes (Anthropic's default cache TTL).
+
+### Prompt cache expiry
+
+`⏳HH:MM Nk` (green) / `❄cold` (dim), appended to `💾`, answers "is the cache still warm?" **before** you do something cache-busting like `/model` or `/compact`. Warm: switching throws away a cheap cache-read turn and pays a full N-token write instead, so think twice. Cold: staying costs the same rewrite, so go ahead.
+
+- Source: the last main-thread assistant entry in `transcript_path` (sidechain and `<synthetic>` entries skipped). Expiry = the later of its `timestamp` and the last idle recap (`system`/`away_summary`, a model call over the same prefix that renews the TTL ~10 min into idle; off if recaps are disabled in `/config`) + TTL. TTL is 5m only when that request's write was purely `ephemeral_5m`; otherwise 1h. N = `input + cache_read + cache_creation` of that request.
+- The statusline only re-renders on interaction, so press **Ctrl+C once** (it re-renders) right before deciding. The time is absolute so a stale view stays readable against the clock.
+- Every uncertainty leans toward "warm". A stale view can show warm when the cache is actually cold, never the reverse (re-warming takes a request, and a request re-renders). The timestamp is response-end, which is later than the TTL refresh. An unknown TTL tier counts as 1h. The server may also evict early. All of these only cost you an unnecessary second thought.
 
 ### 7d active-time computation
 

@@ -13,6 +13,7 @@ RESET='\033[0m'
 # Parse JSON (single jq call)
 eval "$(echo "$input" | jq -r '
   @sh "SESSION_ID=\(.session_id // "")",
+  @sh "TRANSCRIPT=\(.transcript_path // "")",
   @sh "CC_VERSION=\(.version // "")",
   @sh "MODEL=\(.model.display_name // "?")",
   @sh "DIR=\(.workspace.current_dir // ".")",
@@ -388,6 +389,47 @@ if [ "$CACHE_DENOM" -gt 0 ]; then
     CACHE_FMT="💾 ${CACHE_COLOR}${CACHE_HIT_PCT}%${RESET}"
 else
     CACHE_FMT="${DIM}💾 --${RESET}"
+fi
+
+# Prompt-cache expiry: when the last main-thread request's cache dies, so you
+# can tell before /model or /compact whether you're about to throw away a warm
+# cache (think twice) or a cold one (free). Source is the transcript, not the
+# Stop hook — Stop can skip on Esc interrupts; the assistant entry can't.
+#   ⏳HH:MM 63k  green: warm until HH:MM; rebuilding costs a 63k-token write
+#   ❄cold        dim:   already expired at render time
+# Shown as an absolute time for the same reason as ⏱ below (renders freeze
+# while idle; Ctrl+C forces a fresh one). A frozen view can only claim
+# "warm" when it's actually cold — never the reverse, since re-warming takes a
+# request, which re-renders — so staleness errs on the safe side. Every other
+# uncertainty is biased the same way: TTL is 5m only when the write was
+# purely 5m (else 1h), and the entry timestamp is response-end, later than
+# the request that refreshed the TTL. The idle "recap" (system/away_summary,
+# fired ~10min into idle) is a model call over the same prefix and renews the
+# TTL too — observed: 67min gap still hit 99% because a recap landed at +10min
+# — so the anchor is the later of the last assistant entry and the last recap.
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+    read -r CACHE_REQ_AT CACHE_TTL CACHE_PREFIX < <(tail -n 300 "$TRANSCRIPT" | jq -nrR '
+        [inputs | fromjson? | select(.isSidechain | not)] as $e
+        | ($e | map(select(.type == "assistant" and .message.model != "<synthetic>"
+            and .message.usage != null)) | last) // empty
+        | .message.usage as $u
+        | ($u.cache_creation.ephemeral_1h_input_tokens // 0) as $h1
+        | ($u.cache_creation.ephemeral_5m_input_tokens // 0) as $m5
+        | [ ([., ($e | map(select(.type == "system" and .subtype == "away_summary")) | last)]
+              | map(select(. != null) | .timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+              | max),
+            (if $m5 > 0 and $h1 == 0 then 300 else 3600 end),
+            (($u.input_tokens // 0) + ($u.cache_read_input_tokens // 0)
+              + ($u.cache_creation_input_tokens // 0)) ]
+        | @tsv' 2>/dev/null)
+    if [ -n "$CACHE_REQ_AT" ] && [ -n "$CACHE_TTL" ]; then
+        CACHE_EXPIRES=$((CACHE_REQ_AT + CACHE_TTL))
+        if [ "$NOW" -lt "$CACHE_EXPIRES" ]; then
+            CACHE_FMT="${CACHE_FMT} ${GREEN}⏳$(date -r "$CACHE_EXPIRES" +%H:%M) $(fmt_tokens "${CACHE_PREFIX:-0}")${RESET}"
+        else
+            CACHE_FMT="${CACHE_FMT} ${DIM}❄cold${RESET}"
+        fi
+    fi
 fi
 
 # Rate limits
