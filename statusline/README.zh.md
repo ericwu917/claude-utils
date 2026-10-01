@@ -21,7 +21,7 @@
 | `🔀 master` | Git 分支 |
 | `3 files +25 -10` | 未提交的文件变更（`git diff --shortstat HEAD`） |
 | `💾 95%` | **最近一轮** API 调用的 prompt 缓存命中率 |
-| `⏳12:59 83k` / `❄cold` | Prompt 缓存到期时间（接在 `💾` 后）：`12:59` 前仍有效，失效后要重写 83k token；或已经过期。见 [Prompt 缓存到期](#prompt-缓存到期)。 |
+| `⏳12:59` / `❄cold` | Prompt 缓存到期时间（接在 `💾` 后）：`12:59` 前仍有效，或已经过期。见 [Prompt 缓存到期](#prompt-缓存到期)。 |
 | `$3.42 / $54.3 / $3.2K` | 会话费用 **/** 今日花销 **/** 本月累计。session 字段来自 stdin 实时值；今日与本月由 [`ccusage`](https://github.com/ryoppippi/ccusage) 提供（可选 —— 未安装则显示 `--`）。紧凑美元格式：`$X.XX` < 10，`$XX.X` < 100，`$XXX` < 1000，`$X.XK` ≥ 1000。 |
 | `4h10m / 1d2h` | 累计 API 等待时间 **/** 墙钟时间。紧凑时长格式：`<24h` → `XhYm`，`≥24h` → `XdYh`（分钟精度；`5h`/`7d` 倒计时也走同一套格式化）。 |
 
@@ -82,9 +82,9 @@
 
 ### Prompt 缓存到期
 
-`⏳HH:MM Nk`（绿）/ `❄cold`（灰）接在 `💾` 后面，用来在 `/model`、`/compact` 这类会废掉缓存的操作**之前**判断缓存还热不热。还热：切换等于放弃便宜的缓存读，改付一次 N token 的全量写 —— 三思。已冷：留在原地也要重写同样多 —— 放心切。
+`⏳HH:MM`（绿）/ `❄cold`（灰）接在 `💾` 后面，用来在 `/model`、`/compact` 这类会废掉缓存的操作**之前**判断缓存还热不热。还热：切换等于放弃便宜的缓存读，改付一次整段上下文的全量写（大小就是第二行的上下文占用）—— 三思。已冷：留在原地也要重写同样多 —— 放心切。
 
-- 数据源：`transcript_path` 里最后一条主线程 assistant 记录（跳过 sidechain 和 `<synthetic>`）。到期 = max(其 `timestamp`, 最后一次空闲 recap 的时间) + TTL —— recap（`system`/`away_summary`，空闲约 10 分钟时触发，`/config` 可关）是一次带同样前缀的模型调用，会给 TTL 续期；该请求写入纯为 `ephemeral_5m` 时 TTL 取 5m，否则 1h。N = 该请求的 `input + cache_read + cache_creation`。
+- 数据源：`transcript_path` 里最后一条主线程 assistant 记录（跳过 sidechain 和 `<synthetic>`）。到期 = max(其 `timestamp`, 最后一次空闲 recap 的时间) + TTL —— recap（`system`/`away_summary`，空闲约 10 分钟时触发，`/config` 可关）是一次带同样前缀的模型调用，会给 TTL 续期；该请求写入纯为 `ephemeral_5m` 时 TTL 取 5m，否则 1h。
 - statusline 只在交互时重绘，决定前先**按一次 Ctrl+C**（会触发重绘）。显示绝对时间，画面旧了也能对表读。
 - 所有不确定都偏向"热"：旧画面只可能把已冷显示成热、不会反过来（回热必须发请求，而请求必然重绘）；timestamp 是响应结束时刻、晚于 TTL 刷新；TTL 档位不明按 1h；服务端也可能提前驱逐。这些误差的代价都只是多想一下。
 

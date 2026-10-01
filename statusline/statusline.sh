@@ -395,8 +395,9 @@ fi
 # can tell before /model or /compact whether you're about to throw away a warm
 # cache (think twice) or a cold one (free). Source is the transcript, not the
 # Stop hook — Stop can skip on Esc interrupts; the assistant entry can't.
-#   ⏳HH:MM 63k  green: warm until HH:MM; rebuilding costs a 63k-token write
-#   ❄cold        dim:   already expired at render time
+#   ⏳HH:MM  green: warm until HH:MM (rebuild size = the context-used figure
+#            on line 2, which is the same input+cache_read+cache_creation sum)
+#   ❄cold    dim:   already expired at render time
 # Shown as an absolute time for the same reason as ⏱ below (renders freeze
 # while idle; Ctrl+C forces a fresh one). A frozen view can only claim
 # "warm" when it's actually cold — never the reverse, since re-warming takes a
@@ -408,7 +409,7 @@ fi
 # TTL too — observed: 67min gap still hit 99% because a recap landed at +10min
 # — so the anchor is the later of the last assistant entry and the last recap.
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
-    read -r CACHE_REQ_AT CACHE_TTL CACHE_PREFIX < <(tail -n 300 "$TRANSCRIPT" | jq -nrR '
+    read -r CACHE_REQ_AT CACHE_TTL < <(tail -n 300 "$TRANSCRIPT" | jq -nrR '
         [inputs | fromjson? | select(.isSidechain | not)] as $e
         | ($e | map(select(.type == "assistant" and .message.model != "<synthetic>"
             and .message.usage != null)) | last) // empty
@@ -418,14 +419,12 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
         | [ ([., ($e | map(select(.type == "system" and .subtype == "away_summary")) | last)]
               | map(select(. != null) | .timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
               | max),
-            (if $m5 > 0 and $h1 == 0 then 300 else 3600 end),
-            (($u.input_tokens // 0) + ($u.cache_read_input_tokens // 0)
-              + ($u.cache_creation_input_tokens // 0)) ]
+            (if $m5 > 0 and $h1 == 0 then 300 else 3600 end) ]
         | @tsv' 2>/dev/null)
     if [ -n "$CACHE_REQ_AT" ] && [ -n "$CACHE_TTL" ]; then
         CACHE_EXPIRES=$((CACHE_REQ_AT + CACHE_TTL))
         if [ "$NOW" -lt "$CACHE_EXPIRES" ]; then
-            CACHE_FMT="${CACHE_FMT} ${GREEN}⏳$(date -r "$CACHE_EXPIRES" +%H:%M) $(fmt_tokens "${CACHE_PREFIX:-0}")${RESET}"
+            CACHE_FMT="${CACHE_FMT} ${GREEN}⏳$(date -r "$CACHE_EXPIRES" +%H:%M)${RESET}"
         else
             CACHE_FMT="${CACHE_FMT} ${DIM}❄cold${RESET}"
         fi
