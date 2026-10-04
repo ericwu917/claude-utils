@@ -2,6 +2,8 @@
 
 A dual-line terminal statusline for Claude Code. Real-time view of your work environment and session state.
 
+> **Retired — kept as a fallback.** The [statusband mod](../mods/statusband/) now draws these two lines as a band above the prompt, in both the CLI and the desktop app, from each session's own account. `install.sh` no longer installs this script by default; `install.sh --statusline` still does, for setups without mods.
+
 [中文版](README.zh.md)
 
 ## Preview

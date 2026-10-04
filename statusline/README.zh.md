@@ -2,6 +2,8 @@
 
 自定义的 Claude Code 终端状态栏脚本，双行布局，实时显示工作环境和会话状态。
 
+> **已退役，保留作备用。** 这两行现在由 [statusband mod](../mods/statusband/) 以输入框上方横栏的形式绘制，CLI 和桌面 app 都有，数据走各 session 自己的账号。`install.sh` 默认不再安装本脚本；需要时（没有 mods 的环境）用 `install.sh --statusline`。
+
 [English version](README.md)
 
 ## 效果预览

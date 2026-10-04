@@ -4,23 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库定位
 
-这是用户 Claude Code 扩展的**源码 + 运行时仓库**，目前包含 `hooks/`（worktree 生命周期钩子）和 `statusline/`（自定义状态栏脚本），未来还会有 skills/agents。
+这是用户 Claude Code 扩展的**源码仓库**，目前包含 `hooks/`（worktree 生命周期钩子）、`mods/statusband/`（输入框上方的状态横栏 mod，CLI 和桌面 app 通用）和 `statusline/`（旧状态栏脚本，已被 mod 取代、留作备用），未来还会有 skills/agents。
 
-**重要的模型变化**：v0.1.0 之后，`~/.claude/settings.json` 里的路径**直接指向本仓库的工作树**（通常克隆在 `~/.claude/claude-utils/`），不再 `cp` 到 `~/.claude/hooks/`。`git pull` 就是升级，不用重跑 install；只有 `settings.json` schema 变化时才需要再跑一次 `install.sh`。
+**运行时是拷贝，不指向工作树**：`install.sh` 把运行时拷到 `~/.claude/`（`hooks/*.sh`、`mods/statusband/`、`statusline-refresh-caches.sh`；旧 statusline 是 `statusline-command.sh`），`settings.json` 引用的是拷贝。这样仓库切分支、改到一半都不会弄坏正在跑的 session。改完代码要重跑 `install.sh` 才进运行时。
 
 安装入口：
 ```bash
-./install.sh --all              # 幂等合并到 ~/.claude/settings.json（jq 驱动，写前备份）
-./install.sh --dry-run          # 看 diff 不写
+./install.sh --all              # 默认 = --hooks + --mods；幂等合并到 ~/.claude/settings.json（jq 驱动，写前备份）
+./install.sh --statusline       # 旧 statusline.sh（备用），连同 last-reply.sh Stop hook
+./install.sh --dry-run          # 只报会拷什么、看 settings diff，不写
 ```
 
 脚本行为要点：
 - 依赖 `jq`；缺了会 exit 2 并指向 `docs/SETTINGS_MERGE.md`
-- 写之前备份到 `~/.claude/settings.json.bak.<timestamp>`
+- 写之前备份到 `~/.claude/settings.json.bak.<timestamp>`；拷贝逐个报 `new` / `updated` / `unchanged`
 - **冲突检测走 basename 匹配**：`hooks.WorktreeCreate[].hooks[].command` 以 `/worktree-create.sh` 结尾的被视为"我们的"，覆盖；其他一律判为冲突，跳过不动，提示用户看 `docs/SETTINGS_MERGE.md`
-- `statusline.command` 冲突检测靠路径 substring `/statusline/statusline.sh`
+- `env.CLAUDE_CODE_PLUGIN_DIRS` 是 `:` 分隔列表：保留别人的目录，以 `/mods/statusband` 结尾的视为我们的，去重后追加
+- `statusLine.command` 冲突检测靠 substring `statusline-command.sh` 或 `/statusline/statusline.sh`（键是 `statusLine` + `type: command`；旧版脚本写成小写 `statusline`，从来没生效过）
 
-改动立即生效性：hooks 需要重启 CC session 或 `/hooks` 重载；statusline 是每次渲染前拉起的子进程，改完立即生效。
+改动立即生效性：hooks 需要重启 CC session 或 `/hooks` 重载；mod 在 session 启动时加载（开发时用 dev-mods 热重载，见下）。
 
 ## Hook 契约（非显而易见）
 
@@ -72,6 +74,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 单次 jq 抽字段；worktree 内编辑（常见情况）只付一次 `git rev-parse`，`git worktree list` 只在非约定布局的兜底分支才调。
 - `DEBUG`：`1` 记每次调用（params + 判定，验证用）但**跳过 `in-root`** —— 那是绝大多数真实流量、没有信息量，记了会淹掉日志；`0` 只记 ask。日志在 `~/.claude/worktree-guard.log`（独立于 `worktree-hook.log`）。
 
+## `mods/statusband`（状态横栏 mod）
+
+一个 hooks 模块插件（`hooks/register.tsx` 导出 `register(on)`），画 `AbovePrompt` 横栏；`ui.render` 里按 `e.surface` 分两支：terminal 画 statusline.sh 的两行（emoji、`|`、`Raster` 进度条），desktop 只画 app 自己没有的子集（`Svg` 进度条、线条图标）。其他 surface `next(e)`。状态全放 `$.state`（`types/index.d.ts` 是契约），热重载不丢。
+
+数据从哪来（非显而易见）：
+- 5h/7d、会话费用、上下文：`$.session.usage()` + `session.measure` 推送，**是当前 session 自己账号的**
+- 缓存命中率：主线程 `turn.step` 的 `usage`（`e.agentId` 为空才算，排除子 agent）——对应 statusline 的 `current_usage`
+- ⏳ 缓存到期：读 transcript 尾部（`~/.claude/projects/<root 非字母数字→->/<session id>.jsonl`），因为 `turn.step` 的 usage 没有 5m/1h 拆分、idle recap 也不触发 step。算法和 statusline.sh 的 jq 一致
+- Fable：`$.session.authorize()` 拿 handle → `$.http.fetch('https://api.anthropic.com/api/oauth/usage', { auth })`，token 不经过 mod。匹配规则和 `statusline-refresh-caches.sh` 的 `FABLE_DEF` 保持一致
+- 今日/本月：读 `~/.claude/ccusage-cache.json`，过期调 `~/.claude/statusline-refresh-caches.sh ccusage`（本机所有 JSONL = 所有账号合计）
+
+**踩过的坑**：
+- **CLI 和 app 是两个账号**（用户的 CLI 是有 Fable 的 Max 账号）。钥匙串 `Claude Code-credentials`、`~/.claude.json` 都是 CLI 账号的——按账号的数据绝不能走钥匙串，否则 app 里显示 CLI 的数
+- **mods 有灰度开关** `tengu_plugin_hooks_modules`，缓存在 `~/.claude.json`（CLI 账号的），只在 CLI 联网启动时刷新；`claude plugin test` 报 "hooks modules are turned off" 不一定是真没开，先启动一次 `claude`
+- desktop `Svg` 加 `isInteractive` 会进带白底的 iframe（默认 300×150）；要显式给 `width`/`height`
+- desktop 上只有 `Button` 接点击（`Svg`/`Box` 不行），且一律画原生按钮
+- terminal 上 `Link` 只收 `https:`；要 statusline 那种 `file://` 链接（cmd+点击开 Finder）得用 `Markdown`（`[name](file:///…)`，它收 `file:`），加 `onLinkPress` 后普通单击也会落到 mod。实测在一行里排版正常
+- terminal 横栏按 `e.props.bodyColumns` 手工排版（`fitLine`：按 `drop` 优先级丢段，不用 `flexWrap`），保证两行、窄时丢细节不丢进度条
+- `Raster` 一格只有一个字形 + 前景/背景：Fable `┃` 落在填充里时要画在填充色上（深色），否则会在填充中间挖出缺口，和旁边的 1/8 块拼成 `||`
+- 横栏和输入框之间那一行空白是引擎留的，mod 改不了
+
+**测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。
+
+**开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。
+
 ## 版本与 commit 约定
 
 - **Commit message**：走 [Conventional Commits](https://www.conventionalcommits.org/)。常用前缀 `feat:` / `fix:` / `docs:` / `refactor:` / `chore:`。破坏性变更在 footer 写 `BREAKING CHANGE:`，或前缀带 `!`（例 `feat(hooks)!:`）。
@@ -82,3 +109,5 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 调试
 
 两个 hook 都会在做任何事之前，把原始 stdin JSON 追加到 `~/.claude/worktree-hook.log`。hook 出问题时先看这个日志 —— stdin payload 是 "CC 到底发了什么字段" 的唯一 ground truth。
+
+statusband 的失败（Fable 请求等）写 debug log（`claude --debug`），行首 `statusband:`；钩子被跳过、树校验不过时，热重载的 session 会在 transcript 里出一行灰字。

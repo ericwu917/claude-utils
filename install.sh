@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# claude-utils installer — idempotent merge into ~/.claude/settings.json.
+# claude-utils installer — copies the runtime files into ~/.claude and merges
+# their entries into ~/.claude/settings.json, idempotently.
 #
 # Usage:
-#   ./install.sh [--all | --hooks | --statusline] [--dry-run] [--quiet] [-y]
+#   ./install.sh [--all | --hooks | --mods | --statusline] [--dry-run] [--quiet]
 #
-# Points ~/.claude/settings.json at the scripts in this repo (not copies).
-# `git pull` then upgrades in place — no re-install needed unless settings
-# schema changes.
+# Copies, never links: the runtime under ~/.claude stays independent of this
+# working tree (a checkout on another branch can't break a live session). To
+# upgrade, `git pull` and rerun install.sh.
+#
+#   hooks       ~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits}.sh
+#   mods        ~/.claude/mods/statusband/  + ~/.claude/statusline-refresh-caches.sh
+#   statusline  ~/.claude/statusline-command.sh (+ refresh script, hooks/last-reply.sh)
+#               — retired in favor of the statusband mod; kept as a fallback
 
 set -euo pipefail
 
 INSTALL_HOOKS=1
-INSTALL_STATUSLINE=1
-COMPONENT_FLAG_SET=0
+INSTALL_MODS=1
+INSTALL_STATUSLINE=0
 DRY_RUN=0
 QUIET=0
 
@@ -20,13 +26,15 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [options]
 
-Components (default: all):
-  --all            Install both hooks and statusline (default)
-  --hooks          Install only the worktree lifecycle hooks
-  --statusline    Install only the custom statusline
+Components (default: --all):
+  --all            Install the hooks and the mods (default)
+  --hooks          Install only the worktree hooks
+  --mods           Install only the statusband mod (status band above the prompt)
+  --statusline     Install only the legacy statusline.sh (fallback; replaced
+                   by the statusband mod)
 
 Options:
-  --dry-run       Print the diff that would be applied; don't write
+  --dry-run       Show what would be copied and the settings diff; don't write
   -q, --quiet     Minimize output
   -h, --help      Show this help
 
@@ -37,9 +45,10 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --all)        INSTALL_HOOKS=1; INSTALL_STATUSLINE=1; COMPONENT_FLAG_SET=1 ;;
-    --hooks)      INSTALL_HOOKS=1; INSTALL_STATUSLINE=0; COMPONENT_FLAG_SET=1 ;;
-    --statusline) INSTALL_HOOKS=0; INSTALL_STATUSLINE=1; COMPONENT_FLAG_SET=1 ;;
+    --all)        INSTALL_HOOKS=1; INSTALL_MODS=1; INSTALL_STATUSLINE=0 ;;
+    --hooks)      INSTALL_HOOKS=1; INSTALL_MODS=0; INSTALL_STATUSLINE=0 ;;
+    --mods)       INSTALL_HOOKS=0; INSTALL_MODS=1; INSTALL_STATUSLINE=0 ;;
+    --statusline) INSTALL_HOOKS=0; INSTALL_MODS=0; INSTALL_STATUSLINE=1 ;;
     --dry-run)    DRY_RUN=1 ;;
     -q|--quiet)   QUIET=1 ;;
     -h|--help)    usage; exit 0 ;;
@@ -47,7 +56,6 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-: "$COMPONENT_FLAG_SET"  # silence shellcheck about unused var; kept for future
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -56,6 +64,55 @@ MERGE_DOC="$REPO_ROOT/docs/SETTINGS_MERGE.md"
 
 log()  { [[ $QUIET -eq 1 ]] || echo "$@"; }
 warn() { echo "$@" >&2; }
+
+# How settings.json names a runtime file: under the default config dir as
+# $HOME/.claude/..., so the entry survives a renamed home; elsewhere absolute.
+rt_path() {
+  if [[ "$CLAUDE_DIR" == "$HOME/.claude" ]]; then
+    printf '%s' "\$HOME/.claude/$1"
+  else
+    printf '%s' "$CLAUDE_DIR/$1"
+  fi
+}
+
+# The same, spelled with ~ for values a shell doesn't expand $HOME in
+# (CLAUDE_CODE_PLUGIN_DIRS takes ~; statusLine.command is fine either way).
+rt_tilde_path() {
+  if [[ "$CLAUDE_DIR" == "$HOME/.claude" ]]; then
+    # shellcheck disable=SC2088  # a literal ~ is the point: it goes into JSON
+    printf '%s' "~/.claude/$1"
+  else
+    printf '%s' "$CLAUDE_DIR/$1"
+  fi
+}
+
+# Copy a repo file (or directory) to the runtime, reporting what changed.
+# Under --dry-run it only reports.
+install_copy() {
+  local src="$REPO_ROOT/$1" dst="$CLAUDE_DIR/$2" state
+  if [[ -d "$src" ]]; then
+    # Ignore the engine's typings under .claude-plugin/types; compare the rest.
+    # (Collected first: under pipefail, diff's own exit 1 would mask grep's.)
+    local changes=""
+    [[ -d "$dst" ]] && changes="$(diff -rq "$src" "$dst" 2>&1 | grep -vE '\.claude-plugin(/|: )types' || true)"
+    if [[ -d "$dst" && -z "$changes" ]]; then state=unchanged
+    elif [[ -e "$dst" ]]; then state=updated; else state=new; fi
+  else
+    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then state=unchanged
+    elif [[ -e "$dst" ]]; then state=updated; else state=new; fi
+  fi
+  if [[ $DRY_RUN -eq 0 && $state != unchanged ]]; then
+    mkdir -p "$(dirname "$dst")"
+    if [[ -d "$src" ]]; then
+      rm -rf "$dst" && cp -R "$src" "$dst"
+      # Engine-written typings: generated per build, never shipped.
+      rm -rf "$dst/.claude-plugin/types"
+    else
+      cp "$src" "$dst" && chmod +x "$dst"
+    fi
+  fi
+  log "  $state: $2"
+}
 
 if ! command -v jq >/dev/null 2>&1; then
   warn "claude-utils install: jq is required."
@@ -123,39 +180,70 @@ upsert_hook() {
   mv "$TMP.new" "$TMP"
 }
 
+# Hook commands are quoted so a path with spaces survives the shell.
+hook_cmd() { printf '"%s"' "$(rt_path "hooks/$1")"; }
+
 if [[ $INSTALL_HOOKS -eq 1 ]]; then
+  log "hooks → $CLAUDE_DIR/hooks/"
+  for f in worktree-create.sh worktree-remove.sh worktree-lib.sh guard-worktree-edits.sh; do
+    install_copy "hooks/$f" "hooks/$f"
+  done
   hooks_ok=1
-  upsert_hook WorktreeCreate "$REPO_ROOT/hooks/worktree-create.sh" 120 || hooks_ok=0
-  upsert_hook WorktreeRemove "$REPO_ROOT/hooks/worktree-remove.sh" 60  || hooks_ok=0
-  # Stop fires when CC finishes a reply; last-reply.sh timestamps the session
-  # so statusline can show "⏱ HH:MM (Xh ago)". Short timeout — trivial write.
-  upsert_hook Stop "$REPO_ROOT/hooks/last-reply.sh" 5 || hooks_ok=0
+  upsert_hook WorktreeCreate "$(hook_cmd worktree-create.sh)" 120 || hooks_ok=0
+  upsert_hook WorktreeRemove "$(hook_cmd worktree-remove.sh)" 60  || hooks_ok=0
   # PreToolUse guard: ask before edits whose target is outside the active
   # worktree root (the "in a worktree, editing the parent repo" bleed). Scoped
   # to the file-editing tools via matcher.
-  upsert_hook PreToolUse "$REPO_ROOT/hooks/guard-worktree-edits.sh" 10 "Edit|Write|MultiEdit|NotebookEdit" || hooks_ok=0
+  upsert_hook PreToolUse "$(hook_cmd guard-worktree-edits.sh)" 10 "Edit|Write|MultiEdit|NotebookEdit" || hooks_ok=0
   if [[ $hooks_ok -eq 1 ]]; then
-    log "✓ hooks: WorktreeCreate, WorktreeRemove, Stop, PreToolUse → $REPO_ROOT/hooks/"
+    log "✓ hooks: WorktreeCreate, WorktreeRemove, PreToolUse"
   fi
 fi
 
-# ── Statusline ────────────────────────────────────────────────────────────
-# Identified by script path substring `/statusline/statusline.sh`.
+# ── Mods ──────────────────────────────────────────────────────────────────
+# Loaded through env.CLAUDE_CODE_PLUGIN_DIRS (CLI and desktop sessions alike);
+# other folders already listed there are kept, ours is appended once.
+
+if [[ $INSTALL_MODS -eq 1 ]]; then
+  log "mods → $CLAUDE_DIR/mods/"
+  install_copy mods/statusband mods/statusband
+  # statusband refreshes the ccusage cost cache through this script.
+  install_copy statusline/statusline-refresh-caches.sh statusline-refresh-caches.sh
+  jq --arg dir "$(rt_tilde_path mods/statusband)" '
+    .env //= {}
+    | .env.CLAUDE_CODE_PLUGIN_DIRS = (
+        (.env.CLAUDE_CODE_PLUGIN_DIRS // "" | split(":") | map(select(. != "" and (endswith("/mods/statusband") | not))))
+        + [$dir] | join(":"))
+  ' "$TMP" > "$TMP.new"
+  mv "$TMP.new" "$TMP"
+  log "✓ mods: statusband (env.CLAUDE_CODE_PLUGIN_DIRS)"
+fi
+
+# ── Statusline (legacy fallback) ──────────────────────────────────────────
+# Replaced by the statusband mod; kept for setups without mods. Identified for
+# upgrade by the runtime name `statusline-command.sh` (or a repo path).
 
 if [[ $INSTALL_STATUSLINE -eq 1 ]]; then
-  statusline_cmd="bash $REPO_ROOT/statusline/statusline.sh"
-  existing_statusline="$(jq -r '.statusline.command // empty' "$TMP")"
-  if [[ -n "$existing_statusline" && "$existing_statusline" != *"/statusline/statusline.sh"* ]]; then
-    warn "Conflict: statusline.command already set to:"
+  log "statusline (legacy) → $CLAUDE_DIR/"
+  install_copy statusline/statusline.sh statusline-command.sh
+  install_copy statusline/statusline-refresh-caches.sh statusline-refresh-caches.sh
+  install_copy hooks/last-reply.sh hooks/last-reply.sh
+  statusline_cmd="bash $(rt_tilde_path statusline-command.sh)"
+  existing_statusline="$(jq -r '.statusLine.command // empty' "$TMP")"
+  if [[ -n "$existing_statusline" && "$existing_statusline" != *"statusline-command.sh"* \
+        && "$existing_statusline" != *"/statusline/statusline.sh"* ]]; then
+    warn "Conflict: statusLine.command already set to:"
     warn "    $existing_statusline"
     warn "  Skipping statusline. See $MERGE_DOC for manual merge."
   else
-    jq --arg cmd "$statusline_cmd" '
-      .statusline //= {}
-      | .statusline.command = $cmd
-    ' "$TMP" > "$TMP.new"
+    jq --arg cmd "$statusline_cmd" '.statusLine = { type: "command", command: $cmd }' "$TMP" > "$TMP.new"
     mv "$TMP.new" "$TMP"
-    log "✓ statusline → $REPO_ROOT/statusline/statusline.sh"
+    # Stop fires when CC finishes a reply; last-reply.sh timestamps the session
+    # for the statusline's ⏱ segment. Short timeout — trivial write.
+    log "✓ statusline: statusLine"
+    if upsert_hook Stop "$(hook_cmd last-reply.sh)" 5; then
+      log "✓ statusline: Stop hook (last-reply.sh)"
+    fi
   fi
 fi
 
@@ -167,7 +255,7 @@ if cmp -s "$SETTINGS" "$TMP"; then
 fi
 
 if [[ $DRY_RUN -eq 1 ]]; then
-  log "Dry run — diff that would be applied:"
+  log "Dry run — nothing copied; settings diff that would be applied:"
   diff -u "$SETTINGS" "$TMP" || true
   exit 0
 fi

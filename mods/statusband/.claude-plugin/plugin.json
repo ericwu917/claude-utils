@@ -1,0 +1,7 @@
+{
+  "name": "statusband",
+  "version": "0.1.0",
+  "description": "Spike: cwd, git, prompt-cache hit rate and 5h/7d rate-limit bars above the prompt",
+  "author": { "name": "taige", "email": "hongqiang.wu@gmail.com" },
+  "types": "./types/index.d.ts"
+}
