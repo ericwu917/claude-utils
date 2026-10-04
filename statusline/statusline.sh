@@ -217,7 +217,6 @@ COST_FMT=$(printf '$%.2f' "$COST")
 # with a TTL, refreshed lazily in the background so rendering stays fast.
 # Session cost above is live from stdin; monthly needs to scan JSONL so we cache.
 CCUSAGE_CACHE="$HOME/.claude/ccusage-cache.json"
-CCUSAGE_LOCK="$HOME/.claude/ccusage-cache.lock"
 CCUSAGE_TTL=${STATUSLINE_CCUSAGE_TTL:-600}  # seconds; override with env if desired
 
 TODAY_COST=""
@@ -227,46 +226,6 @@ if [ -f "$CCUSAGE_CACHE" ]; then
     CACHE_AGE=$(( NOW - $(stat -f %m "$CCUSAGE_CACHE") ))
     TODAY_COST=$(jq -r '.today // ""' "$CCUSAGE_CACHE" 2>/dev/null)
     MONTH_COST=$(jq -r '.month // ""' "$CCUSAGE_CACHE" 2>/dev/null)
-fi
-
-# Clear lock left by a dead refresher (older than 60s).
-if [ -d "$CCUSAGE_LOCK" ]; then
-    LOCK_AGE=$(( NOW - $(stat -f %m "$CCUSAGE_LOCK") ))
-    [ "$LOCK_AGE" -gt 60 ] && rmdir "$CCUSAGE_LOCK" 2>/dev/null
-fi
-
-# Stale → fork background refresh, keep rendering with current (possibly stale)
-# value. mkdir is atomic so concurrent statuslines don't pile up refreshers.
-if [ "$CACHE_AGE" -gt "$CCUSAGE_TTL" ]; then
-    CCUSAGE_BIN=$(command -v ccusage 2>/dev/null)
-    [ -z "$CCUSAGE_BIN" ] && [ -x "$HOME/.bun/bin/ccusage" ] && CCUSAGE_BIN="$HOME/.bun/bin/ccusage"
-    if [ -n "$CCUSAGE_BIN" ] && mkdir "$CCUSAGE_LOCK" 2>/dev/null; then
-        (
-            trap 'rmdir "$CCUSAGE_LOCK" 2>/dev/null' EXIT
-            TZ_NAME=${STATUSLINE_CCUSAGE_TZ:-$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')}
-            TZ_NAME=${TZ_NAME:-UTC}
-            # Month-start in the reporting TZ (not the system TZ) so the month
-            # boundary lines up with what ccusage --timezone buckets by.
-            MONTH_START=$(TZ="$TZ_NAME" date +%Y%m01)
-            TODAY_DATE=$(TZ="$TZ_NAME" date +%Y-%m-%d)
-            DATA=$("$CCUSAGE_BIN" daily --since "$MONTH_START" --timezone "$TZ_NAME" --json 2>/dev/null)
-            if [ -n "$DATA" ]; then
-                # Single ccusage call — month = sum over all days, today = filter
-                # to today's date. Free lunch; same source JSON.
-                M=$(echo "$DATA" | jq -r '[.daily[].totalCost] | (add // 0)')
-                T=$(echo "$DATA" | jq -r --arg d "$TODAY_DATE" '[.daily[] | select(.date==$d) | .totalCost] | (add // 0)')
-                if [ -n "$M" ] && [ -n "$T" ]; then
-                    # mktemp alongside the cache file guarantees same filesystem,
-                    # so the mv below is an atomic rename (no half-written state).
-                    tmp=$(mktemp "${CCUSAGE_CACHE}.XXXXXX")
-                    jq -n --argjson t "$T" --argjson m "$M" --arg u "$(date +%s)" \
-                        '{today: $t, month: $m, updated_at: ($u | tonumber)}' > "$tmp" && \
-                        mv "$tmp" "$CCUSAGE_CACHE"
-                fi
-            fi
-        ) >/dev/null 2>&1 &
-        disown 2>/dev/null || true
-    fi
 fi
 
 # Compact cost formatter: $X.XX / $XX.X / $XXX / $X.XK
@@ -290,7 +249,6 @@ MONTH_FMT=$(fmt_cost_compact "$MONTH_COST")
 # the way the ccusage block above does: rendering only reads the cache, and a
 # cache past its TTL forks one background refresher (mkdir lock).
 USAGE_CACHE="$HOME/.claude/statusline-usage-cache.json"
-USAGE_LOCK="$HOME/.claude/statusline-usage-cache.lock"
 USAGE_TTL=${STATUSLINE_USAGE_TTL:-300}  # seconds between refresh attempts
 USAGE_STALE=3600                         # data older than this renders DIM
 
@@ -303,77 +261,14 @@ if [ -f "$USAGE_CACHE" ]; then
     ' "$USAGE_CACHE" 2>/dev/null)"
 fi
 
-if [ -d "$USAGE_LOCK" ]; then
-    LOCK_AGE=$(( NOW - $(stat -f %m "$USAGE_LOCK") ))
-    [ "$LOCK_AGE" -gt 60 ] && rmdir "$USAGE_LOCK" 2>/dev/null
-fi
-
-# Gate on attempted_at, not fetched_at: a failed refresh (401/429/offline)
-# still bumps it, so failures back off one TTL instead of retrying every render.
-if [ $(( NOW - USAGE_ATTEMPTED_AT )) -gt "$USAGE_TTL" ] && mkdir "$USAGE_LOCK" 2>/dev/null; then
-    (
-        trap 'rmdir "$USAGE_LOCK" 2>/dev/null' EXIT
-        exec </dev/null
-        # Undocumented endpoint, so the shape is as observed: a limits[] entry
-        # with kind "weekly_scoped" and scope.model.display_name "Fable";
-        # percent is already 0-100; resets_at looks like
-        # 2026-09-30T04:00:00.373624+00:00, which fromdateiso8601 only takes
-        # after dropping the fraction and spelling UTC as Z.
-        FABLE_DEF='def fable: [.limits[]? | select(.kind == "weekly_scoped"
-                     and ((.scope.model.display_name // "") | ascii_downcase | startswith("fable")))][0]
-                   | if . == null then null else
-                       {pct: .percent,
-                        resets_at: (.resets_at | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
-                                    | try fromdateiso8601 catch null)} end;'
-        FABLE="" FETCHED="" SOURCE=""
-
-        # 1) The API, only while CC's stored token is still valid. Never
-        #    refresh it here: a refresh rotates the refresh token and would
-        #    strand CC's own copy. The token reaches curl through stdin
-        #    (--config -), so it never shows up in argv / ps.
-        TOK=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-            | jq -r --argjson now "$(date +%s)" \
-                'select((.claudeAiOauth.expiresAt // 0) / 1000 > $now + 60) | .claudeAiOauth.accessToken // empty' 2>/dev/null)
-        if [ -n "$TOK" ]; then
-            BODY=$(printf 'url = "https://api.anthropic.com/api/oauth/usage"\nheader = "Authorization: Bearer %s"\nheader = "anthropic-beta: oauth-2025-04-20"\nheader = "User-Agent: claude-utils-statusline"\n' "$TOK" \
-                | curl -sf --max-time 5 --config - 2>/dev/null)
-            # A 200 without a Fable bucket is still an answer (fable: null);
-            # only a failed call falls through to the fallback.
-            if printf '%s' "$BODY" | jq -e 'has("limits")' >/dev/null 2>&1; then
-                FABLE=$(printf '%s' "$BODY" | jq -c "$FABLE_DEF fable")
-                FETCHED=$(date +%s); SOURCE=api
-            fi
-        fi
-        unset TOK BODY
-
-        # 2) Fallback: CC keeps the same response in ~/.claude.json
-        #    (cachedUsageUtilization) whenever it fetches it itself, e.g. on
-        #    /usage. Take it only if it's this account's and newer than ours.
-        if [ -z "$SOURCE" ] && [ -f "$HOME/.claude.json" ]; then
-            CC_USAGE=$(jq -c --argjson have "$FABLE_FETCHED_AT" "$FABLE_DEF"'
-                .oauthAccount.accountUuid as $acct
-                | .cachedUsageUtilization
-                | select(. != null and .accountUuid == $acct and (.fetchedAtMs / 1000 | floor) > $have)
-                | {fetched_at: (.fetchedAtMs / 1000 | floor), fable: (.utilization | fable)}' "$HOME/.claude.json" 2>/dev/null)
-            if [ -n "$CC_USAGE" ]; then
-                FABLE=$(printf '%s' "$CC_USAGE" | jq -c '.fable')
-                FETCHED=$(printf '%s' "$CC_USAGE" | jq -r '.fetched_at')
-                SOURCE=cc_cache
-            fi
-        fi
-
-        # Atomic write (mktemp next to the cache → same filesystem → rename).
-        # No new data: keep what we had, only bump attempted_at.
-        tmp=$(mktemp "${USAGE_CACHE}.XXXXXX") || exit 0
-        if [ -n "$SOURCE" ]; then
-            jq -n --argjson f "$FABLE" --argjson t "$FETCHED" --argjson a "$(date +%s)" --arg s "$SOURCE" \
-                '{fable: $f, fetched_at: $t, attempted_at: $a, source: $s}'
-        elif [ -f "$USAGE_CACHE" ]; then
-            jq --argjson a "$(date +%s)" '.attempted_at = $a' "$USAGE_CACHE"
-        else
-            jq -n --argjson a "$(date +%s)" '{fable: null, fetched_at: null, attempted_at: $a, source: null}'
-        fi > "$tmp" && mv "$tmp" "$USAGE_CACHE" || rm -f "$tmp"
-    ) >/dev/null 2>&1 &
+# Either cache stale → refresh in the background and keep rendering with the
+# current (possibly stale) values. The refresher lives in its own script,
+# shared with the desktop statusband mod; it re-checks each TTL (attempted_at
+# for usage, so failures back off) and takes an mkdir lock per cache.
+REFRESH_SCRIPT="${BASH_SOURCE[0]%/*}/statusline-refresh-caches.sh"
+if { [ "$CACHE_AGE" -gt "$CCUSAGE_TTL" ] || [ $(( NOW - USAGE_ATTEMPTED_AT )) -gt "$USAGE_TTL" ]; } \
+    && [ -f "$REFRESH_SCRIPT" ]; then
+    bash "$REFRESH_SCRIPT" </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null || true
 fi
 
