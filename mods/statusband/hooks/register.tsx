@@ -603,6 +603,23 @@ export const register: Register = on => {
     return r
   })
 
+  // A compaction (/compact or auto) shrinks the context at once, but no
+  // session.measure follows until the next turn ends, and the live window has
+  // no fill until its first response. Show the compacted size meanwhile: the
+  // conversation alone, so a little under what the next request will report.
+  on('session.compact', async ($, e, next) => {
+    const r = await next(e)
+    // A vetoed compaction (`skip`) carries no tokensAfter.
+    const after = 'tokensAfter' in r ? r.tokensAfter : undefined
+    if (e.agentId === undefined && e.trigger !== 'precompute' && after !== undefined) {
+      const window = (await read($, context))?.window ?? (await $.session.usage()).context.window
+      if (window > 0) {
+        await setContext($, { tokens: after, window, percent: Math.round((after * 100) / window) })
+      }
+    }
+    return r
+  })
+
   // /clear starts a new conversation (and transcript) in the same process, and
   // raises session.end, never session.start: drop what belonged to the old one,
   // or ⏳ and the expiry warning keep reading the old transcript's cache.

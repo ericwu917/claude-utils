@@ -55,6 +55,25 @@ test('/clear drops the old conversation\'s cache figures; other endings keep the
   expect(cleared.sort()).toEqual(['cacheExpiresAt', 'cacheHit', 'cacheTtlMs', 'cacheWarnedFor'])
 })
 
+test('a compaction shows its new size at once; a precompute does not', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const contexts: any[] = []
+  on('state.set', ($, e: any, next) => {
+    if (e.plugin === 'statusband' && e.key === 'context') contexts.push(e.value)
+    return next(e)
+  })
+  // Beneath the plugin: the window, and the engine's compaction step.
+  // (An op's hook answers `{ value }`, as state.get's does.)
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: [] } }) as any)
+  const messages = [{ role: 'user', text: 'the summary', toolUses: [] }]
+  on('session.compact', () => ({ messages, tokensBefore: 150000, tokensAfter: 30000 }) as any)
+
+  await $.session.compact({ trigger: 'precompute', messages } as any)
+  expect(contexts).toEqual([])
+  await $.session.compact({ trigger: 'manual', messages } as any)
+  expect(contexts).toEqual([{ tokens: 30000, window: 200000, percent: 15 }])
+})
+
 test('draws every segment on both surfaces once the data is in', async ($, on) => {
   mock.clock(on, { now: NOW })
   const iso = (ms: number) => new Date(ms).toISOString()

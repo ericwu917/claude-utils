@@ -79,7 +79,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 一个 hooks 模块插件（`hooks/register.tsx` 导出 `register(on)`），画 `AbovePrompt` 横栏；`ui.render` 里按 `e.surface` 分两支：terminal 画 statusline.sh 的两行（emoji、`|`、`Raster` 进度条），desktop 只画 app 自己没有的子集（`Svg` 进度条、线条图标）。其他 surface `next(e)`。状态全放 `$.state`（`types/index.d.ts` 是契约），热重载不丢。
 
 数据从哪来（非显而易见）：
-- 5h/7d、会话费用、上下文：`$.session.usage()` + `session.measure` 推送，**是当前 session 自己账号的**
+- 5h/7d、会话费用、上下文：`$.session.usage()` + `session.measure` 推送，**是当前 session 自己账号的**。**compact 不触发 `session.measure`**（要等下一个 turn 结束），而且 compact 后 live window 在第一次响应前没有 fill——所以另挂 `session.compact`，用结果的 `tokensAfter`（只算对话本身，略低于下次请求报的值）立刻更新 ctx；跳过子 agent、`precompute` 和被否决（无 `tokensAfter`）的
 - 缓存命中率：主线程 `turn.step` 的 `usage`（`e.agentId` 为空才算，排除子 agent）——对应 statusline 的 `current_usage`
 - ⏳ 缓存到期：读 transcript 尾部（`~/.claude/projects/<root 非字母数字→->/<session id>.jsonl`），因为 `turn.step` 的 usage 没有 5m/1h 拆分、idle recap 也不触发 step。算法和 statusline.sh 的 jq 一致
 - Fable：`$.session.authorize()` 拿 handle → `$.http.fetch('https://api.anthropic.com/api/oauth/usage', { auth })`，token 不经过 mod。匹配规则和 `statusline-refresh-caches.sh` 的 `FABLE_DEF` 保持一致。同账号的多个 session 经 `$.store`（键 `fable:<accountUuid>`）共享一份读数，一个 TTL 只请求一次。**账号怎么认**：终端 session（`session.start` 的 `surface === 'terminal'`）只认 `~/.claude.json` 的 `oauthAccount`，**不读** `CLAUDE_CODE_ACCOUNT_UUID`（从 app 内置终端起的 CLI 可能继承到 app 的值，会把 CLI 的数写进 app 的键）；其他 session（desktop）读 `CLAUDE_CODE_ACCOUNT_UUID`；都没有就不共享
@@ -99,7 +99,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `Raster` 一格只有一个字形 + 前景/背景：Fable `┃` 落在填充里时要画在填充色上（深色），否则会在填充中间挖出缺口，和旁边的 1/8 块拼成 `||`
 - 横栏和输入框之间那一行空白是引擎留的，mod 改不了
 
-**测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言。
+**测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言。插件调用的 op（如 `$.session.usage()`）在测试下层应答时同样要包 `{ value: … }`；`session.compact` 的 `messages` 至少一条，且每条要带 `toolUses: []`。
 
 **开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。
 
