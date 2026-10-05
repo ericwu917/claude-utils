@@ -9,7 +9,63 @@ schema shifts) may land in minor versions.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
+### Breaking
+- **`statusline.sh` is retired in favor of the `statusband` mod.**
+  `install.sh --all` now installs the hooks and the mod, no longer the
+  statusline; `statusline.sh` and its `last-reply.sh` Stop hook stay as a
+  fallback behind `install.sh --statusline`.
+- **`install.sh` copies the runtime into `~/.claude/`** (`hooks/*.sh`,
+  `mods/statusband/`, `statusline-refresh-caches.sh`) instead of pointing
+  `settings.json` at the repo working tree, so the runtime is independent
+  of whatever the checkout is doing. Upgrade = `git pull` + rerun
+  `install.sh`. Hook commands are written as `"$HOME/.claude/hooks/…"`.
+
 ### Added
+- `mods/statusband` — a Claude Code mod drawing a status band above the
+  prompt, in the CLI and the desktop app:
+  - CLI: `statusline.sh`'s two lines (model + version `↑`, directory as a
+    `file://` link that opens Finder, git, cache hit + `⏳` expiry, cost;
+    context / 5h / 7d bars with Fable on 7d). Bars are `Raster` rows at
+    1/8-cell resolution: a solid track, a lighter elapsed-time band, and
+    usage past the pace drawn a shade darker. Lines are fitted to the
+    band's width, dropping detail before bars.
+  - Desktop: what the app doesn't already show, with Svg bars and line
+    icons; the `↗` after the directory opens it in Finder.
+  - Per-account data (5h/7d, Fable) always comes from the session's own
+    account (`$.session.usage()`, `$.session.authorize()` +
+    `$.http.fetch`), never the keychain — the CLI and the app may be
+    signed in as different accounts. Fable readings are shared across
+    sessions of one account through `$.store`.
+  - Reminders: a toast ten minutes before a 1h prompt cache lapses (plus a
+    Discord message when `~/.config/discord-webhook` exists), and a toast
+    each time the context fill crosses 60% upward.
+  - Settings via `env`: `STATUSLINE_WORK_START` / `_END`,
+    `STATUSBAND_CTX_WARN_PCT`, `STATUSBAND_CACHE_WARN_MIN`. The CLI bar
+    track follows CC's theme.
+  - Render and reminder tests under `mods/statusband/tests/`
+    (`claude plugin test mods/statusband`).
+- `install.sh --mods`: installs the mod and appends it to
+  `env.CLAUDE_CODE_PLUGIN_DIRS` (other folders there are kept);
+  `--dry-run` now also reports what would be copied.
+- `statusline/statusline-refresh-caches.sh`: the ccusage-cost and
+  Fable-usage refreshers, split out of `statusline.sh` (which still
+  renders the same); each gates on its TTL and takes its own lock, so the
+  mod reuses the ccusage half.
+- `hooks/guard-worktree-edits.sh` — a `PreToolUse` guard (Edit / Write /
+  MultiEdit / NotebookEdit) that asks before an edit lands outside the
+  session's own tree, in both directions (worktree → main repo and main
+  repo → worktree). `install.sh` wires it, with a new `matcher` argument
+  on `upsert_hook`.
+- `hooks/worktree-create.sh`: desktop auto-named worktrees (a random slug
+  with an empty `transcript_path`) become `claude/<YYMMDD>-<slug>`
+  branches in a flat `<YYMMDD>-<slug>` directory.
+- `hooks/worktree-create.sh`: the parent repo's local-scope MCP servers
+  are mirrored into the worktree's `.mcp.json` (hidden via
+  `info/exclude`; a tracked `.mcp.json` is left alone).
+- `statusline/statusline.sh`: Fable weekly usage overlaid on the 7d bar;
+  prompt-cache expiry (`⏳HH:MM` / `❄cold`) after the hit rate.
 - `hooks/worktree-create.sh`: `feature/<rest>` (git-flow's default prefix)
   now follows the same rules as `feat/<rest>` — branch
   `feature/<YYMMDD>-<rest>` off `origin/develop`, worktree at
@@ -26,6 +82,23 @@ schema shifts) may land in minor versions.
   then falls back to `package.json` lookups under common npm / bun /
   Homebrew / `/usr/local` prefixes. Missing layouts (or older CC builds
   that don't send `version`) silently omit the segment — no false alarms.
+
+### Changed
+- `statusline/statusline.sh`: api / wall durations moved to line 2; the
+  80%-based "usable context" bracket dropped; the `⏱` stamp shows
+  `MM-DD.HH:MM` so a stamp from before midnight isn't read as today's.
+- `hooks/worktree-create.sh`: `-w <name>` enters an existing worktree on
+  an exact path match whatever its branch, instead of erroring.
+
+### Fixed
+- `install.sh` wrote the statusline under `statusline` — CC reads
+  `statusLine` with `type: command` — so the scripted install never took;
+  and a directory's change check was masked by `pipefail`.
+- `hooks/worktree-remove.sh` only removes worktrees on branches the
+  create hook manages: a worktree entered on `main` was torn down, and its
+  branch force-deleted, on exit.
+- `hooks/worktree-remove.sh` resolves the main repo path whole when it
+  contains spaces (it was cut at the first one, and nothing was removed).
 
 ## [0.2.0] - 2026-04-25
 
@@ -164,5 +237,7 @@ schema shifts) may land in minor versions.
   `docs/SETTINGS_MERGE.md`), with Chinese versions preserved at the `.zh.md`
   siblings and cross-linked at the top of each file.
 
-[Unreleased]: https://github.com/ericwu917/claude-utils/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ericwu917/claude-utils/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ericwu917/claude-utils/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/ericwu917/claude-utils/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ericwu917/claude-utils/releases/tag/v0.1.0
