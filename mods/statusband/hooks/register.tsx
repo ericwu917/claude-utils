@@ -79,6 +79,12 @@ const ICONS = {
   ),
 }
 
+// Group separator on desktop: a 1px rule in the icons' mid grey, faded,
+// centred in a 5px-wide image (a 1px-wide image may not be drawn at all).
+const DIVIDER =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="5" height="14" viewBox="0 0 5 14">' +
+  '<rect x="2" y="0" width="1" height="14" fill="#8a8a8a" fill-opacity="0.45"/></svg>'
+
 function cacheColor(hit: number) {
   return hit >= 95 ? GREEN : hit >= 80 ? YELLOW : hit >= 50 ? ORANGE : RED
 }
@@ -688,9 +694,11 @@ export const register: Register = on => {
       const { Box, Text, Svg, Button } = $.ui.resolve(e)
       const icon = (name: keyof typeof ICONS) => <Svg source={ICONS[name]} alt={name} width={14} height={14} />
       const warn = (c: string) => (c === GREEN ? undefined : c)
+      // A hairline between groups, as a toolbar separator (the CLI's " | ").
+      const divider = () => <Svg source={DIVIDER} alt="separator" width={5} height={14} />
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={3}>
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
             <Box flexDirection="row" alignItems="center" columnGap={1}>
               {icon('folder')}
               <Box flexDirection="row" alignItems="center">
@@ -700,6 +708,7 @@ export const register: Register = on => {
                 ) : null}
               </Box>
             </Box>
+            {g ? divider() : null}
             {g ? (
               <Box flexDirection="row" alignItems="center" columnGap={1}>
                 {icon('branch')}
@@ -709,6 +718,7 @@ export const register: Register = on => {
                 {g.files > 0 ? <Text color={RED}>{`−${g.del}`}</Text> : null}
               </Box>
             ) : null}
+            {divider()}
             {/* Hit rate and expiry read as one prompt-cache group. */}
             <Box flexDirection="row" alignItems="center" columnGap={1}>
               {icon('cache')}
@@ -716,13 +726,14 @@ export const register: Register = on => {
               {expiresAt === null ? null : now < expiresAt ? icon('warm') : icon('cold')}
               {expiresAt === null ? null : now < expiresAt ? <Text>{hhmm(expiresAt)}</Text> : <Text dimColor>cold</Text>}
             </Box>
+            {divider()}
             <Box flexDirection="row" alignItems="center" columnGap={1}>
               {icon('cost')}
               <Text>{fmtCost(c.session)}</Text>
               <Text dimColor>{`/ ${fmtCost(c.today)} / ${fmtCost(c.month)}`}</Text>
             </Box>
           </Box>
-          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={3}>
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
             {/* Context fill, as the CLI's first bar: no elapsed band (time 0). */}
             <Box flexDirection="row" alignItems="center" columnGap={1}>
               <Text dimColor>ctx</Text>
@@ -735,15 +746,16 @@ export const register: Register = on => {
               <Text color={warn(ctxColor(pct))}>{`${pct}%`}</Text>
               <Text dimColor>{`${fmtTokens(used)}/${fmtTokens(ctx?.window ?? 0)}`}</Text>
             </Box>
-            {limits.map(({ label, p, cells, mark }) => (
+            {limits.flatMap(({ label, p, cells, mark }) => [
+              divider(),
               <Box flexDirection="row" alignItems="center" columnGap={1}>
                 <Text dimColor>{label}</Text>
                 {p ? <Svg source={rateSvg(p, cells * 8, mark)} alt={`${label} ${p.usage}%`} width={cells * 8} height={16} /> : null}
                 {p ? <Text color={warn(p.color)}>{`${p.usage}%`}</Text> : <Text dimColor>--</Text>}
                 {mark ? <Text color={warn(mark.color)}>{`fb ${mark.pct}%`}</Text> : null}
                 {p?.remaining ? <Text dimColor>{p.remaining}</Text> : null}
-              </Box>
-            ))}
+              </Box>,
+            ])}
           </Box>
         </Box>
       )

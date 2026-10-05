@@ -96,8 +96,9 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
   await narrow.unmount()
 
   const desk = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  // 5 line icons (folder, branch, cache, warm, cost) + the context, 5h and 7d bars.
-  expect(await desk.findAll({ type: 'Svg' })).toHaveLength(8)
+  // 5 line icons (folder, branch, cache, warm, cost) + the context, 5h and 7d
+  // bars + 5 group dividers (3 on line 1, 2 on line 2).
+  expect(await desk.findAll({ type: 'Svg' })).toHaveLength(13)
   expect(await desk.find({ type: 'Text', text: /^70k\/200k$/ })).toBeDefined()
   expect(await desk.find({ type: 'Text', text: /fb 67%/ })).toBeDefined()
   await desk.unmount()
