@@ -20,6 +20,41 @@ test('draws on both surfaces before any data arrives', async ($, on) => {
   }
 })
 
+test('toasts once each time the context fill crosses 60% upward', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const toasts: string[] = []
+  on('ui.toast', ($, e: any) => {
+    toasts.push(e.text)
+    return {} as any
+  })
+  // Beneath the plugin, the engine's echo of the measurement.
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  for (const percent of [50, 63, 70, 40, 65]) {
+    await $.session.measure({
+      context: { tokens: percent * 2000, window: 200000, percent },
+      rateLimits: [],
+      changed: ['context'],
+    } as any)
+  }
+  expect(toasts).toEqual(['Context window at 63% (126k/200k)', 'Context window at 65% (130k/200k)'])
+})
+
+test('/clear drops the old conversation\'s cache figures; other endings keep them', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const cleared: string[] = []
+  on('state.set', ($, e: any, next) => {
+    if (e.plugin === 'statusband' && e.value === null) cleared.push(e.key)
+    return next(e)
+  })
+  // Beneath the plugin, the engine's end step.
+  on('session.end', () => ({ sessionId: 's' }) as any)
+
+  await $.session.end({ reason: 'other' } as any)
+  expect(cleared).toEqual([])
+  await $.session.end({ reason: 'clear' } as any)
+  expect(cleared.sort()).toEqual(['cacheExpiresAt', 'cacheHit', 'cacheTtlMs', 'cacheWarnedFor'])
+})
+
 test('draws every segment on both surfaces once the data is in', async ($, on) => {
   mock.clock(on, { now: NOW })
   const iso = (ms: number) => new Date(ms).toISOString()
@@ -52,17 +87,18 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
   expect(await term.find({ type: 'Markdown', text: /\[claude-utils\]\(file:\/\/\/Users\/someone\/claude-utils\)/ })).toBeDefined()
   await term.unmount()
 
-  // A ~97-column terminal: line 2 is 99 cells wide in full, so the context
+  // A 91-column terminal: line 2 is 93 cells wide in full, so the context
   // token counts go first and every bar still shows (nothing wraps).
-  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 97 } })
+  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 91 } })
   expect(await narrow.findAll({ type: 'Raster' })).toHaveLength(3)
   expect(await narrow.find({ type: 'Text', text: /70k\/200k/ })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: /3d0h/ })).toBeDefined()
   await narrow.unmount()
 
   const desk = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  // 5 line icons (folder, branch, cache, warm, cost) + the 5h and 7d bars.
-  expect(await desk.findAll({ type: 'Svg' })).toHaveLength(7)
+  // 5 line icons (folder, branch, cache, warm, cost) + the context, 5h and 7d bars.
+  expect(await desk.findAll({ type: 'Svg' })).toHaveLength(8)
+  expect(await desk.find({ type: 'Text', text: /^70k\/200k$/ })).toBeDefined()
   expect(await desk.find({ type: 'Text', text: /fb 67%/ })).toBeDefined()
   await desk.unmount()
 })

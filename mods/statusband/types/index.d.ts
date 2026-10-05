@@ -14,6 +14,9 @@ declare module 'claude-code' {
       rates: Rate[]
       cacheHit: number | null
       cacheExpiresAt: number | null
+      cacheTtlMs: number | null
+      // The expiry the 10-minute warning was last raised for (once per expiry).
+      cacheWarnedFor: number | null
       git: Git | null
       cwd: string | null
       tick: number
@@ -22,6 +25,8 @@ declare module 'claude-code' {
       model: string | null
       version: Version | null
       context: Context | null
+      // The context-fill toast was raised and the fill has not dropped back since.
+      ctxWarned: boolean
     }
   }
 }

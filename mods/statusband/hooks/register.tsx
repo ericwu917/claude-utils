@@ -12,6 +12,8 @@ import type { Context, Cost, Fable, Git, Rate, Version } from '../types'
 const rates = atom({ plugin: 'statusband', key: 'rates' } as const, [] as Rate[])
 const cacheHit = atom({ plugin: 'statusband', key: 'cacheHit' } as const, null as number | null)
 const cacheExpiresAt = atom({ plugin: 'statusband', key: 'cacheExpiresAt' } as const, null as number | null)
+const cacheTtlMs = atom({ plugin: 'statusband', key: 'cacheTtlMs' } as const, null as number | null)
+const cacheWarnedFor = atom({ plugin: 'statusband', key: 'cacheWarnedFor' } as const, null as number | null)
 const git = atom({ plugin: 'statusband', key: 'git' } as const, null as Git | null)
 const cwd = atom({ plugin: 'statusband', key: 'cwd' } as const, null as string | null)
 const tick = atom({ plugin: 'statusband', key: 'tick' } as const, 0)
@@ -20,25 +22,36 @@ const fable = atom({ plugin: 'statusband', key: 'fable' } as const, null as Fabl
 const model = atom({ plugin: 'statusband', key: 'model' } as const, null as string | null)
 const version = atom({ plugin: 'statusband', key: 'version' } as const, null as Version | null)
 const context = atom({ plugin: 'statusband', key: 'context' } as const, null as Context | null)
+const ctxWarned = atom({ plugin: 'statusband', key: 'ctxWarned' } as const, false)
 
 // Work hours [start, end), as statusline.sh's STATUSLINE_WORK_START / _END
 // (default 9-22): outside them the 5h/7d bars go red, and 7d paces on them
 // alone. Read at session start (and again on each reload, which reruns it).
 const work = { start: 9, end: 22 }
 
-async function readWorkHours($: EngineInterface) {
-  const hour = (v: string | undefined) => (v !== undefined && /^\d{1,2}$/.test(v) ? Number(v) : NaN)
-  const start = hour(await $.env.get('STATUSLINE_WORK_START'))
-  const end = hour(await $.env.get('STATUSLINE_WORK_END'))
+// Alert thresholds: the context-fill toast (STATUSBAND_CTX_WARN_PCT, default 60)
+// and how long before a cache lapses its warning goes out
+// (STATUSBAND_CACHE_WARN_MIN, default 10). Read with the work hours.
+const alerts = { ctxPct: 60, cacheWarnMs: 10 * 60_000 }
+
+async function readEnvConfig($: EngineInterface) {
+  const int = (v: string | undefined) => (v !== undefined && /^\d{1,3}$/.test(v) ? Number(v) : NaN)
+  const start = int(await $.env.get('STATUSLINE_WORK_START'))
+  const end = int(await $.env.get('STATUSLINE_WORK_END'))
   if (!Number.isNaN(start) && start <= 23) work.start = start
   if (!Number.isNaN(end) && end <= 24) work.end = end
   if (work.start >= work.end) Object.assign(work, { start: 9, end: 22 })
+  const ctxPct = int(await $.env.get('STATUSBAND_CTX_WARN_PCT'))
+  if (ctxPct >= 1 && ctxPct <= 100) alerts.ctxPct = ctxPct
+  const cacheMin = int(await $.env.get('STATUSBAND_CACHE_WARN_MIN'))
+  if (cacheMin >= 1 && cacheMin <= 59) alerts.cacheWarnMs = cacheMin * 60_000
 }
 const CCUSAGE_TTL = 600_000
 const USAGE_TTL = 300_000 // between Fable fetch attempts, failures included
 const USAGE_STALE = 3600_000 // Fable data older than this draws grey
 const FIVE_H_WIDTH = 10
 const SEVEN_D_WIDTH = 14
+const CTX_WIDTH = 14
 
 const GREEN = '#22c55e'
 const YELLOW = '#eab308'
@@ -126,6 +139,53 @@ async function refreshCacheExpiry($: EngineInterface) {
   const cc = last.message.usage.cache_creation ?? {}
   const ttl = (cc.ephemeral_5m_input_tokens ?? 0) > 0 && (cc.ephemeral_1h_input_tokens ?? 0) === 0 ? 300_000 : 3600_000
   await update($, cacheExpiresAt, () => at + ttl)
+  await update($, cacheTtlMs, () => ttl)
+}
+
+// When the main thread's last API response ended: each one renews the cache, but
+// the transcript-based expiry above only moves at turn end, so a long turn
+// would look like a cache about to lapse.
+let lastMainResponseAt = 0
+
+// Ten minutes (alerts.cacheWarnMs) before a warm cache lapses: a toast, and a
+// Discord message when a webhook is configured, so a pause can end before the
+// next turn pays to rebuild the whole prefix. Once per expiry; a cache whose TTL
+// is no longer than the lead time (5m) never qualifies.
+async function checkCacheWarning($: EngineInterface) {
+  const at = await read($, cacheExpiresAt)
+  const ttl = await read($, cacheTtlMs)
+  if (at === null || ttl === null || ttl <= alerts.cacheWarnMs) return
+  const expires = Math.max(at, lastMainResponseAt + ttl)
+  const now = await $.clock.now()
+  const left = expires - now
+  if (left <= 0 || left > alerts.cacheWarnMs || (await read($, cacheWarnedFor)) === expires) return
+  await update($, cacheWarnedFor, () => expires)
+  const dir = (await read($, cwd))?.split('/').pop() ?? '?'
+  const text = `Prompt cache for ${dir} expires at ${hhmm(expires)} (${Math.ceil(left / 60_000)} min left)`
+  $.ui.toast(`⏳ ${text}`, { timeoutMs: 15_000 })
+  await notifyDiscord($, `⏳ ${text}. Send a message to keep it warm.`)
+}
+
+// Posts to the Discord webhook whose URL is in ~/.config/discord-webhook, as
+// ~/bin/discord-notify does; nothing when that file is absent. The URL is
+// never logged.
+async function notifyDiscord($: EngineInterface, content: string) {
+  const home = await $.env.get('HOME')
+  if (!home) return
+  const file = `${home}/.config/discord-webhook`
+  if (!(await $.fs.exists(file))) return
+  const url = String(await $.fs.read(file)).trim()
+  if (!url.startsWith('https://')) return
+  try {
+    const res = await $.http.fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content.slice(0, 2000) }),
+    })
+    if (!res.ok) $.ui.log(`statusband: Discord webhook got HTTP ${res.status}`, { to: 'debug' })
+  } catch (err) {
+    $.ui.log(`statusband: Discord webhook failed: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
+  }
 }
 
 // Today's and month-to-date cost: the CLI statusline's ccusage cache, refreshed
@@ -151,11 +211,22 @@ async function refreshCcusage($: EngineInterface) {
 // one reads the CLI account's keychain token, and the app may sign in as another
 // account. The session's credential rides as an opaque handle the host fills in.
 // Matching rule kept in step with FABLE_DEF in statusline-refresh-caches.sh.
+//
+// Sessions of one account share the reading through $.store (it outlives a
+// session), so N open sessions make one request per TTL, not N.
 async function refreshFable($: EngineInterface) {
   const now = await $.clock.now()
   const prev = await read($, fable)
   if (prev && now - prev.attemptedAt <= USAGE_TTL) return
+  const key = await fableStoreKey($)
+  const shared = key ? ((await $.store.get(key)) as Fable | undefined) : undefined
+  if (shared && now - shared.attemptedAt <= USAGE_TTL) {
+    await update($, fable, () => shared)
+    return
+  }
   let next: Fable = { pct: prev?.pct ?? null, fetchedAt: prev?.fetchedAt ?? null, attemptedAt: now }
+  // Claim the slot before the request, so a session ticking meanwhile reuses it.
+  if (key) await $.store.set(key, next)
   try {
     const auth = await $.session.authorize()
     if (auth) {
@@ -178,7 +249,33 @@ async function refreshFable($: EngineInterface) {
   } catch (err) {
     $.ui.log(`statusband: usage fetch failed: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
   }
+  if (key) await $.store.set(key, next)
   await update($, fable, () => next)
+}
+
+// The account this session runs as, for keying shared per-account data. A CLI
+// (terminal) session runs as the account ~/.claude.json holds, which its
+// credential belongs to; it never trusts CLAUDE_CODE_ACCOUNT_UUID, since a CLI
+// started from the app's terminal may inherit the app's. Other sessions (the
+// desktop host) are named there. Neither → null, and each session fetches alone.
+let isTerminalSession = false
+let accountKey: string | null | undefined
+
+async function fableStoreKey($: EngineInterface) {
+  if (accountKey === undefined) {
+    accountKey = null
+    if (isTerminalSession) {
+      const home = await $.env.get('HOME')
+      if (home && (await $.fs.exists(`${home}/.claude.json`))) {
+        try {
+          accountKey = JSON.parse(String(await $.fs.read(`${home}/.claude.json`))).oauthAccount?.accountUuid ?? null
+        } catch {}
+      }
+    } else {
+      accountKey = (await $.env.get('CLAUDE_CODE_ACCOUNT_UUID')) ?? null
+    }
+  }
+  return accountKey ? `fable:${accountKey}` : null
 }
 
 // `claude-opus-5-5[1m]` → `Opus 5.5 (1M context)`, the status line's display name;
@@ -238,6 +335,21 @@ const toContext = (c: { tokens?: number; window: number; percent?: number }): Co
   window: c.window,
   percent: c.percent ?? null,
 })
+
+// A toast each time the context fill crosses alerts.ctxPct (60%) upward;
+// dropping back under (a /compact, a /clear) re-arms it.
+async function setContext($: EngineInterface, next: Context) {
+  await update($, context, () => next)
+  const pct = next.percent
+  if (pct === null) return
+  if (pct < alerts.ctxPct) {
+    await update($, ctxWarned, () => false)
+  } else if (!(await read($, ctxWarned))) {
+    await update($, ctxWarned, () => true)
+    const used = next.tokens === null ? '' : ` (${fmtTokens(next.tokens)}/${fmtTokens(next.window)})`
+    $.ui.toast(`Context window at ${pct}%${used}`, { timeoutMs: 10_000 })
+  }
+}
 
 function fmtCost(c: number | null) {
   if (c === null) return '--'
@@ -306,7 +418,17 @@ function pace(label: string, r: Rate | undefined, now: number): Pace | null {
 // Terminal bars as one Raster row: the track and the elapsed-time band are cell
 // backgrounds (no ░ texture, no │ cell), and the fill ends in a 1/8-width block,
 // so a 10-cell bar resolves 80 steps. The app's Svg bar, in terminal cells.
-const TRACK = 0x3a3a3a
+// Track grey follows CC's theme (a Raster takes raw colors, no theme keys):
+// light themes get a light track; dark and `auto` (the terminal's own, which a
+// mod can't see) keep the dark one. Re-read when /config changes the theme.
+const TRACK_DARK = 0x3a3a3a
+const TRACK_LIGHT = 0xd4d4d4
+let track = TRACK_DARK
+
+async function readTheme($: EngineInterface) {
+  const theme = (await $.config.list()).find(row => row.key === 'theme')?.value
+  track = String(theme ?? '').startsWith('light') ? TRACK_LIGHT : TRACK_DARK
+}
 const EIGHTHS = [0x20, 0x258f, 0x258e, 0x258d, 0x258c, 0x258b, 0x258a, 0x2589, 0x2588] // ' ' ▏▎▍▌▋▊▉█
 
 const hexInt = (hex: string) => parseInt(hex.slice(1), 16)
@@ -318,22 +440,25 @@ function mixInt(a: number, b: number, t: number) {
 
 function barCells(width: number, usage: number, color: string, time?: number, mark?: { pct: number; color: string }) {
   const fg = hexInt(color)
-  const band = mixInt(TRACK, fg, 0.35)
+  const band = mixInt(track, fg, 0.35)
   const u = (Math.min(100, Math.max(0, usage)) * width) / 100
   const t = ((time === undefined ? 0 : Math.min(100, Math.max(0, time))) * width) / 100
   const m = mark ? Math.min(width - 1, Math.floor((mark.pct * width) / 100)) : -1
+  // Past the pace, the fill takes the darker shade (whole cells: a cell has one fg).
+  const overrunFrom = isOverrun(usage, time) ? Math.round(t) : width
   const words = new Uint32Array(width * 3)
   for (let i = 0; i < width; i++) {
-    const bg = t - i >= 0.5 ? band : TRACK
+    const bg = t - i >= 0.5 ? band : track
     const eighth = Math.max(0, Math.min(8, Math.round((u - i) * 8)))
+    const ink = i >= overrunFrom ? mixInt(fg, 0x000000, OVERRUN_SHADE) : fg
     // A second meter sharing the window (Fable on 7d) as a ┃ (the CLI's overlay):
     // on the track in its own pace color; inside the fill, a dark rule on the
     // fill so the bar stays whole instead of showing a notch.
     const isInFill = eighth >= 4
     const cell =
       i === m
-        ? [0x2503, isInFill ? mixInt(fg, 0x000000, 0.6) : hexInt(mark!.color), isInFill ? fg : bg]
-        : [EIGHTHS[eighth]!, fg, eighth === 8 ? fg : bg]
+        ? [0x2503, isInFill ? mixInt(ink, 0x000000, 0.6) : hexInt(mark!.color), isInFill ? ink : bg]
+        : [EIGHTHS[eighth]!, ink, eighth === 8 ? ink : bg]
     words.set(cell, i * 3)
   }
   let s = ''
@@ -396,6 +521,15 @@ function tint(hex: string, t: number) {
   return `#${ch(1)}${ch(3)}${ch(5)}`
 }
 
+// Usage past the pace (ahead of elapsed time) is drawn a shade darker, so how
+// far a bar overran its time shows even though the fill covers the elapsed band.
+const OVERRUN_SHADE = 0.35
+const shade = (hex: string) => `#${mixInt(hexInt(hex), 0x000000, OVERRUN_SHADE).toString(16).padStart(6, '0')}`
+
+// Only a paced bar (time > 0) can overrun: the context bar has no pace, and at
+// a window's very start there is nothing elapsed to compare against.
+const isOverrun = (usage: number, time: number | undefined) => time !== undefined && time > 0 && usage > time
+
 // A square track + fill, pace shown as a lighter elapsed band. Neutral greys
 // at partial opacity read on both light and dark themes (the SVG is an image,
 // so it cannot follow the page's theme variables).
@@ -412,6 +546,9 @@ function rateSvg(p: Pace, w: number, mark?: { pct: number; color: string }) {
     `<rect x="0" y="${ty}" width="${w}" height="${th}" fill="rgba(128,128,128,0.30)"/>` +
     `<rect x="0" y="${ty}" width="${elapsed}" height="${th}" fill="${p.color}" fill-opacity="0.35"/>` +
     (fill > 0 ? `<rect x="0" y="${ty}" width="${fill}" height="${th}" fill="${p.color}"/>` : '') +
+    (isOverrun(p.usage, p.time)
+      ? `<rect x="${elapsed}" y="${ty}" width="${fill - elapsed}" height="${th}" fill="${shade(p.color)}"/>`
+      : '') +
     // A second meter sharing this window (Fable on 7d) as a thin lane along the
     // bottom, in a lighter tint of its own pace color so it stays legible even
     // over a fill of the same hue.
@@ -425,11 +562,13 @@ function rateSvg(p: Pace, w: number, mark?: { pct: number; color: string }) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
-    await readWorkHours($)
+    isTerminalSession = e.surface === 'terminal'
+    await readEnvConfig($)
+    await readTheme($).catch(() => {})
     const usage = await $.session.usage()
     await update($, rates, () => usage.rateLimits.map(x => ({ ...x })))
     await update($, cost, v => ({ ...v!, session: usage.cost?.usd ?? null }))
-    await update($, context, () => toContext(usage.context))
+    await setContext($, toContext(usage.context))
     await refreshModelAndVersion($)
     await refreshGit($)
     await refreshCacheExpiry($)
@@ -446,8 +585,31 @@ export const register: Register = on => {
       void refreshCcusage($)
       void refreshFable($)
       void refreshModelAndVersion($)
+      void checkCacheWarning($)
     })
     return r
+  })
+
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const r = await next(e)
+    await readTheme($).catch(() => {})
+    void update($, tick, n => (n ?? 0) + 1) // redraw the bars in the new track grey
+    return r
+  })
+
+  // /clear starts a new conversation (and transcript) in the same process, and
+  // raises session.end, never session.start: drop what belonged to the old one,
+  // or ⏳ and the expiry warning keep reading the old transcript's cache.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      transcriptPath = null
+      lastMainResponseAt = 0
+      await update($, cacheHit, () => null)
+      await update($, cacheExpiresAt, () => null)
+      await update($, cacheTtlMs, () => null)
+      await update($, cacheWarnedFor, () => null)
+    }
+    return next(e)
   })
 
   on('session.measure', async ($, e, next) => {
@@ -458,7 +620,7 @@ export const register: Register = on => {
       await update($, cost, v => ({ ...v!, session: e.cost?.usd ?? null }))
     }
     if (e.changed.includes('context')) {
-      await update($, context, () => toContext(e.context))
+      await setContext($, toContext(e.context))
     }
     return next(e)
   })
@@ -468,6 +630,7 @@ export const register: Register = on => {
     const r = yield* next(e)
     const u = r.usage
     if (!e.agentId && u) {
+      lastMainResponseAt = await $.clock.now()
       const denom = u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens
       if (denom > 0) {
         await update($, cacheHit, () => Math.floor((u.cache_read_input_tokens * 100) / denom))
@@ -498,8 +661,11 @@ export const register: Register = on => {
     const rl = await read($, rates)
     const c = await read($, cost)
     const f = await read($, fable)
+    const ctx = await read($, context)
 
     const dirName = dir ? dir.split('/').pop() : '?'
+    const pct = ctx?.percent ?? 0
+    const used = ctx?.tokens ?? Math.round((pct * (ctx?.window ?? 0)) / 100)
     const p7 = pace('7d', rl.find(x => x.kind === 'seven_day'), now)
     // Fable's weekly window shares 7d's reset, so it is paced against 7d's time;
     // stale data goes grey, which beats the off-hours red (as in statusline.sh).
@@ -557,6 +723,18 @@ export const register: Register = on => {
             </Box>
           </Box>
           <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={3}>
+            {/* Context fill, as the CLI's first bar: no elapsed band (time 0). */}
+            <Box flexDirection="row" alignItems="center" columnGap={1}>
+              <Text dimColor>ctx</Text>
+              <Svg
+                source={rateSvg({ label: 'ctx', usage: pct, time: 0, color: ctxColor(pct) }, CTX_WIDTH * 8)}
+                alt={`context ${pct}%`}
+                width={CTX_WIDTH * 8}
+                height={16}
+              />
+              <Text color={warn(ctxColor(pct))}>{`${pct}%`}</Text>
+              <Text dimColor>{`${fmtTokens(used)}/${fmtTokens(ctx?.window ?? 0)}`}</Text>
+            </Box>
             {limits.map(({ label, p, cells, mark }) => (
               <Box flexDirection="row" alignItems="center" columnGap={1}>
                 <Text dimColor>{label}</Text>
@@ -580,10 +758,7 @@ export const register: Register = on => {
       const { Box, Text, Raster, Markdown } = $.ui.resolve(e)
       const mdl = await read($, model)
       const ver = await read($, version)
-      const ctx = await read($, context)
       const sep: Piece = { text: ' | ', dim: true }
-      const pct = ctx?.percent ?? 0
-      const used = ctx?.tokens ?? Math.round((pct * (ctx?.window ?? 0)) / 100)
 
       const line1: Run[] = [
         {
@@ -624,7 +799,7 @@ export const register: Register = on => {
         {
           drop: 0,
           pieces: [
-            { raster: 'ctx', columns: 20, cells: barCells(20, pct, ctxColor(pct)) },
+            { raster: 'ctx', columns: CTX_WIDTH, cells: barCells(CTX_WIDTH, pct, ctxColor(pct)) },
             { text: ` ${pct}%`, color: ctxColor(pct) },
           ],
         },

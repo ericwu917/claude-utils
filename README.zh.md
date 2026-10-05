@@ -3,7 +3,7 @@
 个人 Claude Code 扩展积累：worktree 生命周期 hooks、输入框上方的状态横栏 mod（CLI 和桌面 app 通用）等。
 
 <p align="center">
-  <img src="docs/images/statusline.png" alt="claude-utils 状态栏 —— 第一行展示 Opus 4.7 (1M context)、分支与 diff、token 吞吐与费用；第二行展示上下文窗口 + 5h/7d 速率限制进度条（叠加时间进度标记）" width="820" />
+  <img src="docs/images/statusband-desktop.png" alt="statusband 在桌面 app 里 —— 第一行：目录（带用 Finder 打开的箭头）、git 分支与 diff、prompt 缓存命中率与到期时间、会话 / 今日 / 本月费用；第二行：上下文、5h、7d 进度条，7d 底部一条浅色的 Fable 细条" width="820" />
 </p>
 
 > **现状**：给个人用，但每一处"踩坑点"都写成了可复用组件。欢迎拿走、改造、提 issue。
@@ -62,7 +62,11 @@ Local scope 的 MCP server 会跟到 worktree：local scope（`claude mcp add` �
 一个 Claude Code mod（函数 hooks 插件），在输入框上方画一条 `AbovePrompt` 横栏，CLI 和桌面 app 通用，按 surface 各画各的：
 
 - **CLI**：两行，内容对齐原来的 statusline.sh —— `[模型 v版本↑] 📁 目录 | 🔀 分支 | N files +a -d | 💾 命中率 ⏳缓存到期 | $会话/$今日/$本月`；第二行上下文、5h、7d 三条进度条（7d 上 `┃` 标出 Fable 周用量）。进度条用 `Raster` 画：实心底轨、同色系浅色的"已过时间"段、1/8 宽方块收尾，10 格分辨 80 级。按横栏宽度排版不折行，窄时先丢细节（今日/本月、diff、倒计时……），进度条始终保留。
-- **桌面 app**：只显示 app 自己没有的那部分（目录、git、缓存命中率 + 到期、费用、5h/7d），Svg 进度条 + 线条图标；目录名后的 `↗` 点击用 Finder 打开。
+- **桌面 app**：只显示 app 自己没有的那部分（目录、git、缓存命中率 + 到期、费用；第二行上下文、5h、7d），Svg 进度条 + 线条图标；目录名后的 `↗` 点击用 Finder 打开。
+
+**缓存快过期提醒**：1h 的 prompt cache 离到期还剩 10 分钟时弹一个 toast（每个到期时间一次，续期后重新计时；5m 缓存不提醒）。如果 `~/.config/discord-webhook` 存在（内容是 Discord webhook URL），同时往那里发一条消息。上下文用量每次向上越过 60% 也弹一个 toast（降回 60% 以下，比如 `/compact` 后，重新计）。两个阈值可在 `settings.json` 的 `env` 里调：`STATUSBAND_CTX_WARN_PCT`（默认 60）、`STATUSBAND_CACHE_WARN_MIN`（默认 10）。
+
+CLI 进度条的底轨颜色跟 CC 的主题（`/config` → theme）：`light*` 用浅灰，其余（含 `auto`）用深灰。
 
 配色阈值、7d 工作时段节奏都和原 statusline 一致；工作时段读 `STATUSLINE_WORK_START` / `STATUSLINE_WORK_END`（默认 9–22），建议写在 `settings.json` 的 `env` 里 —— 桌面 app 不读 shell 的 rc 文件。**按账号的数据（5h/7d、Fable）一律取当前 session 自己的账号**（`$.session.usage()`、`$.session.authorize()` + `$.http.fetch`），不读钥匙串 —— CLI 和 app 可以登录不同账号。今日/本月费用来自 ccusage，统计的是本机所有 JSONL（即两个账号合计），通过 `statusline-refresh-caches.sh ccusage` 刷新缓存。
 

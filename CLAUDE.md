@@ -82,12 +82,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 5h/7d、会话费用、上下文：`$.session.usage()` + `session.measure` 推送，**是当前 session 自己账号的**
 - 缓存命中率：主线程 `turn.step` 的 `usage`（`e.agentId` 为空才算，排除子 agent）——对应 statusline 的 `current_usage`
 - ⏳ 缓存到期：读 transcript 尾部（`~/.claude/projects/<root 非字母数字→->/<session id>.jsonl`），因为 `turn.step` 的 usage 没有 5m/1h 拆分、idle recap 也不触发 step。算法和 statusline.sh 的 jq 一致
-- Fable：`$.session.authorize()` 拿 handle → `$.http.fetch('https://api.anthropic.com/api/oauth/usage', { auth })`，token 不经过 mod。匹配规则和 `statusline-refresh-caches.sh` 的 `FABLE_DEF` 保持一致
+- Fable：`$.session.authorize()` 拿 handle → `$.http.fetch('https://api.anthropic.com/api/oauth/usage', { auth })`，token 不经过 mod。匹配规则和 `statusline-refresh-caches.sh` 的 `FABLE_DEF` 保持一致。同账号的多个 session 经 `$.store`（键 `fable:<accountUuid>`）共享一份读数，一个 TTL 只请求一次。**账号怎么认**：终端 session（`session.start` 的 `surface === 'terminal'`）只认 `~/.claude.json` 的 `oauthAccount`，**不读** `CLAUDE_CODE_ACCOUNT_UUID`（从 app 内置终端起的 CLI 可能继承到 app 的值，会把 CLI 的数写进 app 的键）；其他 session（desktop）读 `CLAUDE_CODE_ACCOUNT_UUID`；都没有就不共享
+- `/clear`：只发 `session.end`（`reason: 'clear'`），**不发** `session.start`，session id / transcript 却换了——所以在 `session.end` 里清掉 transcript 路径和缓存类 state，否则 ⏳ 和过期提醒一直读旧 transcript
+- 阈值 / 工作时段：`readEnvConfig` 在 `session.start` 读 `STATUSLINE_WORK_START/END`、`STATUSBAND_CTX_WARN_PCT`、`STATUSBAND_CACHE_WARN_MIN`（建议放 `settings.json` 的 `env`，桌面 app 不读 shell rc）
+- Raster 底轨色跟 `$.config.list()` 里的 `theme`（`light*` 浅灰，其余深灰；`auto` 看不到终端底色，按深色），`config.set{key=theme}` 时重读
 - 今日/本月：读 `~/.claude/ccusage-cache.json`，过期调 `~/.claude/statusline-refresh-caches.sh ccusage`（本机所有 JSONL = 所有账号合计）
+- 缓存快过期提醒（`checkCacheWarning`，跟 60s 定时器走）：到期 = max(transcript 算的到期, 主线程最后一次 API 响应 + TTL)——后者防长 turn 中途误报（transcript 那个只在 turn 结束时更新）。剩 ≤10 分钟 toast 一次（`cacheWarnedFor` 记着已提醒的到期时间）；5m TTL 不提醒（一开始就在 10 分钟内）。`~/.config/discord-webhook` 存在就直接 POST `{content}` 过去（同 `~/bin/discord-notify`，不依赖 PATH 里有 `~/bin`），URL 不落日志
 
 **踩过的坑**：
 - **CLI 和 app 是两个账号**（用户的 CLI 是有 Fable 的 Max 账号）。钥匙串 `Claude Code-credentials`、`~/.claude.json` 都是 CLI 账号的——按账号的数据绝不能走钥匙串，否则 app 里显示 CLI 的数
-- **mods 有灰度开关** `tengu_plugin_hooks_modules`，缓存在 `~/.claude.json`（CLI 账号的），只在 CLI 联网启动时刷新；`claude plugin test` 报 "hooks modules are turned off" 不一定是真没开，先启动一次 `claude`
+- **mods 有灰度开关** `tengu_plugin_hooks_modules`，缓存在 `~/.claude.json`（CLI 账号的），只在 CLI 联网启动时刷新；`claude plugin test` 报 "hooks modules are turned off" 不一定是真没开，先启动一次 `claude`。**实测会来回翻**（同一天 false→true→false→true，刷新时间都是新的）——开关为 false 时新开的 CLI session 不加载任何 mod，CLI 就没有横栏；绝不改缓存绕过
 - desktop `Svg` 加 `isInteractive` 会进带白底的 iframe（默认 300×150）；要显式给 `width`/`height`
 - desktop 上只有 `Button` 接点击（`Svg`/`Box` 不行），且一律画原生按钮
 - terminal 上 `Link` 只收 `https:`；要 statusline 那种 `file://` 链接（cmd+点击开 Finder）得用 `Markdown`（`[name](file:///…)`，它收 `file:`），加 `onLinkPress` 后普通单击也会落到 mod。实测在一行里排版正常
@@ -95,7 +99,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `Raster` 一格只有一个字形 + 前景/背景：Fable `┃` 落在填充里时要画在填充色上（深色），否则会在填充中间挖出缺口，和旁边的 1/8 块拼成 `||`
 - 横栏和输入框之间那一行空白是引擎留的，mod 改不了
 
-**测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。
+**测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言。
 
 **开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。
 

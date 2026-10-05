@@ -3,7 +3,7 @@
 Personal Claude Code extensions: worktree lifecycle hooks and a status band mod above the prompt (CLI and desktop app alike).
 
 <p align="center">
-  <img src="docs/images/statusline.png" alt="claude-utils statusline — dual-line layout showing Opus 4.7 (1M context), branch and diff, token throughput and cost on line 1; context-window and 5h/7d rate-limit progress bars with time markers on line 2" width="820" />
+  <img src="docs/images/statusband-desktop.png" alt="statusband in the desktop app — line 1: directory with an open-in-Finder arrow, git branch and diff, prompt-cache hit rate and expiry time, session / today / month cost; line 2: context, 5h and 7d bars, the 7d bar with a lighter Fable lane along its bottom" width="820" />
 </p>
 
 > Small-scale personal tooling, but every "gotcha I hit" is packaged as a reusable component. Fork it, tweak it, file issues.
@@ -62,7 +62,11 @@ Paired cleanup. Runs `git worktree remove` (**without `--force`**, so dirty work
 A Claude Code mod (a plugin of function hooks) that draws an `AbovePrompt` band, in the CLI and the desktop app alike, each surface its own way:
 
 - **CLI**: two lines matching the old statusline.sh — `[model vX↑] 📁 dir | 🔀 branch | N files +a -d | 💾 hit% ⏳expiry | $session/$today/$month`, then context, 5h and 7d bars (a `┃` on 7d marks Fable's weekly usage). Bars are `Raster` rows: a solid track, a lighter same-hue elapsed-time band, a fill ending in a 1/8-width block (a 10-cell bar resolves 80 steps). Lines are fitted to the band's width without wrapping; a narrow terminal drops detail first (today/month, diff, countdowns…), never the bars.
-- **Desktop app**: only what the app doesn't already show (directory, git, cache hit + expiry, cost, 5h/7d), with Svg bars and line icons; the `↗` after the directory opens it in Finder.
+- **Desktop app**: only what the app doesn't already show (directory, git, cache hit + expiry, cost; then context, 5h and 7d bars), with Svg bars and line icons; the `↗` after the directory opens it in Finder.
+
+**Cache-expiry reminder**: ten minutes before a 1h prompt cache lapses, a toast (once per expiry, re-armed when the cache renews; 5m caches never qualify). If `~/.config/discord-webhook` exists (holding a Discord webhook URL), a message goes there too. The context fill gets a toast too, each time it crosses 60% upward (dropping back under, e.g. after `/compact`, re-arms it). Both thresholds can be set in `settings.json`'s `env`: `STATUSBAND_CTX_WARN_PCT` (default 60), `STATUSBAND_CACHE_WARN_MIN` (default 10).
+
+The CLI bars' track follows CC's theme (`/config` → theme): light grey for `light*` themes, dark grey otherwise (including `auto`).
 
 Color thresholds and the 7d work-hours pacing match the old statusline; work hours come from `STATUSLINE_WORK_START` / `STATUSLINE_WORK_END` (default 9–22), best set in `settings.json`'s `env` — the desktop app doesn't read your shell rc files. **Per-account data (5h/7d, Fable) always comes from the session's own account** (`$.session.usage()`, `$.session.authorize()` + `$.http.fetch`), never the keychain — the CLI and the app may be signed in as different accounts. Today/month cost comes from ccusage over every local JSONL (i.e. all accounts on the machine), its cache refreshed through `statusline-refresh-caches.sh ccusage`.
 
