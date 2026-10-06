@@ -74,6 +74,51 @@ test('a compaction shows its new size at once; a precompute does not', async ($,
   expect(contexts).toEqual([{ tokens: 30000, window: 200000, percent: 15 }])
 })
 
+test('5h/7d readings are shared with the account\'s other sessions', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, { CLAUDE_CODE_ACCOUNT_UUID: 'acct' })
+  const five = (percentUsed: number) => [{ kind: 'five_hour', percentUsed, resetsAt: new Date(NOW + 3600_000).toISOString() }]
+  // The plugin's store, which the account's other sessions write too; one of
+  // them already shared a reading.
+  const store = new Map<string, unknown>([['rates:acct', { rates: five(40), at: NOW - 60_000 }]])
+  on('store.get', ($, e) => ({ value: store.get(e.key) }) as any)
+  on('store.set', ($, e) => (store.set(e.key, e.value), { value: undefined }) as any)
+  const shown: unknown[] = []
+  on('state.set', ($, e: any, next) => {
+    if (e.plugin === 'statusband' && e.key === 'rates') shown.push(e.value)
+    return next(e)
+  })
+  // Beneath the plugin: the engine's start, its usage (a stale start-up
+  // reading), the echo of a measurement, and what the rest of the start reads.
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: five(82) } }) as any)
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.288' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as any)
+
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  // The start-up 82% gives way to the shared 40%.
+  expect(shown.at(-1)).toEqual(five(40))
+
+  // A newer reading from elsewhere is taken on the next tick.
+  store.set('rates:acct', { rates: five(55), at: NOW + 30_000 })
+  await clock.advance(60_000)
+  expect(shown.at(-1)).toEqual(five(55))
+
+  // This session's own turn reads 60%: shown, and shared.
+  await $.session.measure({ context: { window: 200000 }, rateLimits: five(60), changed: ['rateLimits'] } as any)
+  expect(shown.at(-1)).toEqual(five(60))
+  expect(store.get('rates:acct')).toEqual({ rates: five(60), at: NOW + 60_000 })
+
+  // An older shared reading never replaces a newer one of its own.
+  store.set('rates:acct', { rates: five(50), at: NOW + 45_000 })
+  await clock.advance(60_000)
+  expect(shown.at(-1)).toEqual(five(60))
+})
+
 test('draws every segment on both surfaces once the data is in', async ($, on) => {
   mock.clock(on, { now: NOW })
   const iso = (ms: number) => new Date(ms).toISOString()

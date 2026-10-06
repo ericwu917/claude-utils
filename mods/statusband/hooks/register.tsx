@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Context, Cost, Fable, Git, Rate, Version } from '../types'
+import type { Context, Cost, Fable, Git, Rate, SharedRates, Version } from '../types'
 
 // A status band above the prompt, replacing statusline/statusline.sh.
 // Terminal: statusline.sh's two lines (bars as Rasters). Desktop: the subset the
@@ -10,6 +10,7 @@ import type { Context, Cost, Fable, Git, Rate, Version } from '../types'
 // (rate limits, Fable) always comes from the session's own account.
 
 const rates = atom({ plugin: 'statusband', key: 'rates' } as const, [] as Rate[])
+const ratesAt = atom({ plugin: 'statusband', key: 'ratesAt' } as const, 0)
 const cacheHit = atom({ plugin: 'statusband', key: 'cacheHit' } as const, null as number | null)
 const cacheExpiresAt = atom({ plugin: 'statusband', key: 'cacheExpiresAt' } as const, null as number | null)
 const cacheTtlMs = atom({ plugin: 'statusband', key: 'cacheTtlMs' } as const, null as number | null)
@@ -224,7 +225,7 @@ async function refreshFable($: EngineInterface) {
   const now = await $.clock.now()
   const prev = await read($, fable)
   if (prev && now - prev.attemptedAt <= USAGE_TTL) return
-  const key = await fableStoreKey($)
+  const key = await accountStoreKey($, 'fable')
   const shared = key ? ((await $.store.get(key)) as Fable | undefined) : undefined
   if (shared && now - shared.attemptedAt <= USAGE_TTL) {
     await update($, fable, () => shared)
@@ -267,7 +268,7 @@ async function refreshFable($: EngineInterface) {
 let isTerminalSession = false
 let accountKey: string | null | undefined
 
-async function fableStoreKey($: EngineInterface) {
+async function accountStoreKey($: EngineInterface, kind: 'fable' | 'rates') {
   if (accountKey === undefined) {
     accountKey = null
     if (isTerminalSession) {
@@ -281,7 +282,27 @@ async function fableStoreKey($: EngineInterface) {
       accountKey = (await $.env.get('CLAUDE_CODE_ACCOUNT_UUID')) ?? null
     }
   }
-  return accountKey ? `fable:${accountKey}` : null
+  return accountKey ? `${kind}:${accountKey}` : null
+}
+
+// 5h/7d come from the session's own API responses, so an idle session's reading
+// stands still. Each reading a turn brings is shared with the account's other
+// sessions through $.store; the timer takes a newer one from there.
+async function setRates($: EngineInterface, list: Rate[]) {
+  const at = await $.clock.now()
+  await update($, rates, () => list.map(x => ({ ...x })))
+  await update($, ratesAt, () => at)
+  const key = await accountStoreKey($, 'rates')
+  if (key && list.length > 0) await $.store.set(key, { rates: list, at } satisfies SharedRates)
+}
+
+async function pullSharedRates($: EngineInterface) {
+  const key = await accountStoreKey($, 'rates')
+  const shared = key ? ((await $.store.get(key)) as SharedRates | undefined) : undefined
+  if (shared && shared.at > (await read($, ratesAt))) {
+    await update($, rates, () => shared.rates)
+    await update($, ratesAt, () => shared.at)
+  }
 }
 
 // `claude-opus-5-5[1m]` → `Opus 5.5 (1M context)`, the status line's display name;
@@ -572,7 +593,11 @@ export const register: Register = on => {
     await readEnvConfig($)
     await readTheme($).catch(() => {})
     const usage = await $.session.usage()
+    // A start-up reading may be one a resumed session saved long ago: any shared
+    // one beats it (ratesAt 0), and it is never shared itself.
     await update($, rates, () => usage.rateLimits.map(x => ({ ...x })))
+    await update($, ratesAt, () => 0)
+    await pullSharedRates($)
     await update($, cost, v => ({ ...v!, session: usage.cost?.usd ?? null }))
     await setContext($, toContext(usage.context))
     await refreshModelAndVersion($)
@@ -586,6 +611,7 @@ export const register: Register = on => {
     // refresh is TTL-gated, so most ticks do nothing there).
     $.clock.every(60_000, () => {
       void update($, tick, n => (n ?? 0) + 1)
+      void pullSharedRates($)
       void refreshGit($)
       void refreshCacheExpiry($)
       void refreshCcusage($)
@@ -637,7 +663,7 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('rateLimits')) {
-      await update($, rates, () => e.rateLimits.map(x => ({ ...x })))
+      await setRates($, e.rateLimits)
     }
     if (e.changed.includes('cost')) {
       await update($, cost, v => ({ ...v!, session: e.cost?.usd ?? null }))
