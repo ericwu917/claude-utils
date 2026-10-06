@@ -50,6 +50,7 @@ async function readEnvConfig($: EngineInterface) {
 const CCUSAGE_TTL = 600_000
 const USAGE_TTL = 300_000 // between Fable fetch attempts, failures included
 const USAGE_STALE = 3600_000 // Fable data older than this draws grey
+const ACCOUNT_TTL = 600_000 // between asks of which account the credential is
 const FIVE_H_WIDTH = 10
 const SEVEN_D_WIDTH = 14
 const CTX_WIDTH = 14
@@ -260,29 +261,37 @@ async function refreshFable($: EngineInterface) {
   await update($, fable, () => next)
 }
 
-// The account this session runs as, for keying shared per-account data. A CLI
-// (terminal) session runs as the account ~/.claude.json holds, which its
-// credential belongs to; it never trusts CLAUDE_CODE_ACCOUNT_UUID, since a CLI
-// started from the app's terminal may inherit the app's. Other sessions (the
-// desktop host) are named there. Neither → null, and each session fetches alone.
-let isTerminalSession = false
-let accountKey: string | null | undefined
+// The account this session runs as, for keying shared per-account data: asked of
+// the profile endpoint with the session's own credential, the one its data comes
+// from. Never ~/.claude.json or CLAUDE_CODE_ACCOUNT_UUID: a `claude` run with the
+// app's identity env rewrites ~/.claude.json's account while the CLI's credential
+// stays, and one account's figures then land under the other's key. Asked again
+// every ACCOUNT_TTL, so a /login moves the key too. Unknown → null, and nothing
+// is shared (each session fetches alone).
+let account: Promise<{ uuid: string | null; at: number }> | null = null
 
 async function accountStoreKey($: EngineInterface, kind: 'fable' | 'rates') {
-  if (accountKey === undefined) {
-    accountKey = null
-    if (isTerminalSession) {
-      const home = await $.env.get('HOME')
-      if (home && (await $.fs.exists(`${home}/.claude.json`))) {
-        try {
-          accountKey = JSON.parse(String(await $.fs.read(`${home}/.claude.json`))).oauthAccount?.accountUuid ?? null
-        } catch {}
-      }
-    } else {
-      accountKey = (await $.env.get('CLAUDE_CODE_ACCOUNT_UUID')) ?? null
-    }
+  const now = await $.clock.now()
+  if (!account || now - (await account).at > ACCOUNT_TTL) account = profileAccount($, now)
+  const { uuid } = await account
+  return uuid ? `${kind}:${uuid}` : null
+}
+
+async function profileAccount($: EngineInterface, now: number) {
+  try {
+    const auth = await $.session.authorize()
+    if (!auth) return { uuid: null, at: now }
+    const res = await $.http.fetch('https://api.anthropic.com/api/oauth/profile', {
+      headers: { 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': 'claude-utils-statusband' },
+      auth: auth.handle,
+    })
+    const uuid = res.ok ? JSON.parse(res.text)?.account?.uuid : undefined
+    if (typeof uuid === 'string' && uuid) return { uuid, at: now }
+    $.ui.log(`statusband: profile fetch got HTTP ${res.status}`, { to: 'debug' })
+  } catch (err) {
+    $.ui.log(`statusband: profile fetch failed: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
   }
-  return accountKey ? `${kind}:${accountKey}` : null
+  return { uuid: null, at: now }
 }
 
 // 5h/7d come from the session's own API responses, so an idle session's reading
@@ -589,7 +598,6 @@ function rateSvg(p: Pace, w: number, mark?: { pct: number; color: string }) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
-    isTerminalSession = e.surface === 'terminal'
     await readEnvConfig($)
     await readTheme($).catch(() => {})
     const usage = await $.session.usage()

@@ -76,7 +76,17 @@ test('a compaction shows its new size at once; a precompute does not', async ($,
 
 test('5h/7d readings are shared with the account\'s other sessions', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
-  mock.env(on, { CLAUDE_CODE_ACCOUNT_UUID: 'acct' })
+  // The env names another account (as a `claude` run with the app's identity env
+  // leaves ~/.claude.json): the key follows the credential's profile instead.
+  mock.env(on, { CLAUDE_CODE_ACCOUNT_UUID: 'not-this-one' })
+  on('session.authorize', () => ({ value: { handle: 'h', kind: 'oauth' } }) as any)
+  on('http.fetch', ($, e: any) =>
+    ({
+      value: e.url.endsWith('/api/oauth/profile')
+        ? { ok: true, status: 200, text: JSON.stringify({ account: { uuid: 'acct' } }) }
+        : { ok: false, status: 503, text: '' },
+    }) as any,
+  )
   const five = (percentUsed: number) => [{ kind: 'five_hour', percentUsed, resetsAt: new Date(NOW + 3600_000).toISOString() }]
   // The plugin's store, which the account's other sessions write too; one of
   // them already shared a reading.

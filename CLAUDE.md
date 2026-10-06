@@ -83,7 +83,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 5h/7d 只在本 session 跑 turn 时才有新读数，停着的 session 会一直挂着旧数（过了 `resetsAt` 就是 `0h0m` + 旧百分比）。所以每次 `session.measure` 带来的读数连同时间写进 `$.store`（键 `rates:<accountUuid>`，账号认法同 Fable），60s 定时器取比自己新的那份；启动时的读数可能是 resume 存下的旧数，记为时间 0、不共享。同账号所有 session 都停着时照旧不刷新
 - 缓存命中率：主线程 `turn.step` 的 `usage`（`e.agentId` 为空才算，排除子 agent）——对应 statusline 的 `current_usage`
 - ⏳ 缓存到期：读 transcript 尾部（`~/.claude/projects/<root 非字母数字→->/<session id>.jsonl`），因为 `turn.step` 的 usage 没有 5m/1h 拆分、idle recap 也不触发 step。算法和 statusline.sh 的 jq 一致
-- Fable：`$.session.authorize()` 拿 handle → `$.http.fetch('https://api.anthropic.com/api/oauth/usage', { auth })`，token 不经过 mod。匹配规则和 `statusline-refresh-caches.sh` 的 `FABLE_DEF` 保持一致。同账号的多个 session 经 `$.store`（键 `fable:<accountUuid>`）共享一份读数，一个 TTL 只请求一次。**账号怎么认**：终端 session（`session.start` 的 `surface === 'terminal'`）只认 `~/.claude.json` 的 `oauthAccount`，**不读** `CLAUDE_CODE_ACCOUNT_UUID`（从 app 内置终端起的 CLI 可能继承到 app 的值，会把 CLI 的数写进 app 的键）；其他 session（desktop）读 `CLAUDE_CODE_ACCOUNT_UUID`；都没有就不共享
+- Fable：`$.session.authorize()` 拿 handle → `$.http.fetch('https://api.anthropic.com/api/oauth/usage', { auth })`，token 不经过 mod。匹配规则和 `statusline-refresh-caches.sh` 的 `FABLE_DEF` 保持一致。同账号的多个 session 经 `$.store`（键 `fable:<accountUuid>`）共享一份读数，一个 TTL 只请求一次。**账号怎么认**：用同一个 `authorize()` handle 请求 `/api/oauth/profile`，取 `account.uuid`（每 10 分钟重问一次，`/login` 换号后键也跟着换），这样键和数据出自同一份凭据；**不读** `~/.claude.json` 也不读 `CLAUDE_CODE_ACCOUNT_UUID`——从 app session 里跑的 `claude` 会带着 app 的身份环境变量把 `~/.claude.json` 的 `oauthAccount` 改成 app 账号（钥匙串凭据却还是 CLI 的），之前按它认账号就把 CLI 的 Fable、5h/7d 写进了 app 的键。拿不到就不共享
 - `/clear`：只发 `session.end`（`reason: 'clear'`），**不发** `session.start`，session id / transcript 却换了——所以在 `session.end` 里清掉 transcript 路径和缓存类 state，否则 ⏳ 和过期提醒一直读旧 transcript
 - 阈值 / 工作时段：`readEnvConfig` 在 `session.start` 读 `STATUSLINE_WORK_START/END`、`STATUSBAND_CTX_WARN_PCT`、`STATUSBAND_CACHE_WARN_MIN`（建议放 `settings.json` 的 `env`，桌面 app 不读 shell rc）
 - Raster 底轨色跟 `$.config.list()` 里的 `theme`（`light*` 浅灰，其余深灰；`auto` 看不到终端底色，按深色），`config.set{key=theme}` 时重读
@@ -102,7 +102,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言。插件调用的 op（如 `$.session.usage()`）在测试下层应答时同样要包 `{ value: … }`；`session.compact` 的 `messages` 至少一条，且每条要带 `toolUses: []`。
 
-**开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。
+**开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。**在桌面 app 的 session 里跑这些 `claude` 命令时**，先去掉 app 的身份环境变量：`env -u CLAUDE_CODE_ACCOUNT_UUID -u CLAUDE_CODE_USER_EMAIL -u CLAUDE_CODE_ORGANIZATION_UUID -u ANTHROPIC_BASE_URL claude plugin test …`，否则会把 `~/.claude.json` 的账号改成 app 的（只有在 CLI 里 `/login` 能改回来）。
 
 ## 版本与 commit 约定
 
