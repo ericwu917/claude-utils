@@ -25,7 +25,7 @@ test('toasts once each time the context fill crosses 60% upward', async ($, on) 
   const toasts: string[] = []
   on('ui.toast', ($, e: any) => {
     toasts.push(e.text)
-    return {} as any
+    return { value: undefined } as any
   })
   // Beneath the plugin, the engine's echo of the measurement.
   on('session.measure', ($, e) => ({ changed: e.changed }))
@@ -127,6 +127,54 @@ test('5h/7d readings are shared with the account\'s other sessions', async ($, o
   store.set('rates:acct', { rates: five(50), at: NOW + 45_000 })
   await clock.advance(60_000)
   expect(shown.at(-1)).toEqual(five(60))
+})
+
+test('a newer installed version gets one toast of its CHANGELOG, CLI only, once it has a section', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, { HOME: '/home/me' })
+  const store = new Map<string, unknown>()
+  on('store.get', ($, e) => ({ value: store.get(e.key) }) as any)
+  on('store.set', ($, e) => (store.set(e.key, e.value), { value: undefined }) as any)
+  const toasts: string[] = []
+  on('ui.toast', ($, e: any) => (toasts.push(e.text), { value: undefined }) as any)
+  on('ui.log', () => ({ value: undefined }) as any)
+  // Beneath the plugin: 2.1.288 runs, 2.1.293 is installed beside it.
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: [] } }) as any)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.288' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('session.root', () => ({ value: '/tmp' }) as any)
+  on('session.authorize', () => ({ value: null }) as any)
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as any)
+  on('fs.exists', ($, e: any) => ({ value: e.path === '/home/me/.local/share/claude/versions' }) as any)
+  on('fs.list', () => ({ value: [{ name: '2.1.288' }, { name: '2.1.293' }] }) as any)
+  let changelog = '# Changelog\n\n## 2.1.292\n\n- Fixed an older thing\n'
+  on('http.fetch', ($, e: any) =>
+    ({ value: e.url.endsWith('/CHANGELOG.md') ? { ok: true, status: 200, text: changelog } : { ok: false, status: 503, text: '' } }) as any,
+  )
+  const asked: string[] = []
+  on('model.complete', ($, e: any) => (asked.push(e.prompt), { value: { isAnswered: true, text: '• 新增 Haiku 5.5\n• 修复内存泄漏', usage: {} } }) as any)
+
+  // The desktop never asks.
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  expect(asked).toEqual([])
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  // No section for 2.1.293 yet: no summary, no toast.
+  expect(asked).toEqual([])
+  expect(toasts).toEqual([])
+
+  // It appears; the next try (after the retry wait) summarises that section alone.
+  changelog = '# Changelog\n\n## 2.1.293\n\n- Added Claude Haiku 5.5\n- Fixed a memory leak\n\n## 2.1.292\n\n- Fixed an older thing\n'
+  await clock.advance(1800_000 + 60_000)
+  expect(asked).toEqual(['Claude Code 2.1.293 CHANGELOG:\n\n- Added Claude Haiku 5.5\n- Fixed a memory leak'])
+  expect(toasts).toEqual(['Claude Code 2.1.293\n• 新增 Haiku 5.5\n• 修复内存泄漏'])
+
+  // Once per version: later ticks stay quiet.
+  await clock.advance(1800_000 + 60_000)
+  expect(toasts).toHaveLength(1)
 })
 
 test('draws every segment on both surfaces once the data is in', async ($, on) => {

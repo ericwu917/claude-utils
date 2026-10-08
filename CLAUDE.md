@@ -84,6 +84,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 缓存命中率：主线程 `turn.step` 的 `usage`（`e.agentId` 为空才算，排除子 agent）——对应 statusline 的 `current_usage`
 - ⏳ 缓存到期：读 transcript 尾部（`~/.claude/projects/<root 非字母数字→->/<session id>.jsonl`），因为 `turn.step` 的 usage 没有 5m/1h 拆分、idle recap 也不触发 step。算法和 statusline.sh 的 jq 一致
 - Fable：`$.session.authorize()` 拿 handle → `$.http.fetch('https://api.anthropic.com/api/oauth/usage', { auth })`，token 不经过 mod。匹配规则和 `statusline-refresh-caches.sh` 的 `FABLE_DEF` 保持一致。同账号的多个 session 经 `$.store`（键 `fable:<accountUuid>`）共享一份读数，一个 TTL 只请求一次。**账号怎么认**：用同一个 `authorize()` handle 请求 `/api/oauth/profile`，取 `account.uuid`（每 10 分钟重问一次，`/login` 换号后键也跟着换），这样键和数据出自同一份凭据；**不读** `~/.claude.json` 也不读 `CLAUDE_CODE_ACCOUNT_UUID`——从 app session 里跑的 `claude` 会带着 app 的身份环境变量把 `~/.claude.json` 的 `oauthAccount` 改成 app 账号（钥匙串凭据却还是 CLI 的），之前按它认账号就把 CLI 的 Fable、5h/7d 写进了 app 的键。拿不到就不共享
+- 新版本说明（只在 CLI）：`refreshModelAndVersion` 发现磁盘上有更新的版本（↑）时，取 GitHub `CHANGELOG.md` 里该版本的 `## <版本>` 一段，交给 `$.model.complete`（sonnet）总结成 ≤5 行中文 toast。每个版本只提示一次，跨 session 共享（`$.store` 键 `release:<版本>`，先占位再请求）；CHANGELOG 还没有这一段、请求或总结失败都不算提示过，30 分钟后重试
 - `/clear`：只发 `session.end`（`reason: 'clear'`），**不发** `session.start`，session id / transcript 却换了——所以在 `session.end` 里清掉 transcript 路径和缓存类 state，否则 ⏳ 和过期提醒一直读旧 transcript
 - 阈值 / 工作时段：`readEnvConfig` 在 `session.start` 读 `STATUSLINE_WORK_START/END`、`STATUSBAND_CTX_WARN_PCT`、`STATUSBAND_CACHE_WARN_MIN`（建议放 `settings.json` 的 `env`，桌面 app 不读 shell rc）
 - Raster 底轨色跟 `$.config.list()` 里的 `theme`（`light*` 浅灰，其余深灰；`auto` 看不到终端底色，按深色），`config.set{key=theme}` 时重读
@@ -99,8 +100,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - terminal 横栏按 `e.props.bodyColumns` 手工排版（`fitLine`：按 `drop` 优先级丢段，不用 `flexWrap`），保证两行、窄时丢细节不丢进度条
 - `Raster` 一格只有一个字形 + 前景/背景：Fable `┃` 落在填充里时要画在填充色上（深色），否则会在填充中间挖出缺口，和旁边的 1/8 块拼成 `||`
 - 横栏和输入框之间那一行空白是引擎留的，mod 改不了
-
-**测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言。插件调用的 op（如 `$.session.usage()`）在测试下层应答时同样要包 `{ value: … }`；`session.compact` 的 `messages` 至少一条，且每条要带 `toolUses: []`。
+**测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言（2.1.293 起要返回 `{ value: undefined }`，返回 `{}` 会被判失败）。插件调用的 op（如 `$.session.usage()`）在测试下层应答时同样要包 `{ value: … }`；`session.compact` 的 `messages` 至少一条，且每条要带 `toolUses: []`。
 
 **开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。**在桌面 app 的 session 里跑这些 `claude` 命令时**，先去掉 app 的身份环境变量：`env -u CLAUDE_CODE_ACCOUNT_UUID -u CLAUDE_CODE_USER_EMAIL -u CLAUDE_CODE_ORGANIZATION_UUID -u ANTHROPIC_BASE_URL claude plugin test …`，否则会把 `~/.claude.json` 的账号改成 app 的（只有在 CLI 里 `/login` 能改回来）。
 
