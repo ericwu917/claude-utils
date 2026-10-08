@@ -100,9 +100,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - terminal 横栏按 `e.props.bodyColumns` 手工排版（`fitLine`：按 `drop` 优先级丢段，不用 `flexWrap`），保证两行、窄时丢细节不丢进度条
 - `Raster` 一格只有一个字形 + 前景/背景：Fable `┃` 落在填充里时要画在填充色上（深色），否则会在填充中间挖出缺口，和旁边的 1/8 块拼成 `||`
 - 横栏和输入框之间那一行空白是引擎留的，mod 改不了
+- `/cd`（"把 session 迁到新目录"）**不发** `classic.CwdChanged`——那个只在 Bash 工具里 shell `cd` 改了目录时发；要接 `/cd` 得挂 `command.run`（`{ command: 'cd' }`），而且命令结束时迁移可能还没落地，要等 `$.session.cwd()` 变了再刷新
+
 **测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言（2.1.293 起要返回 `{ value: undefined }`，返回 `{}` 会被判失败）。插件调用的 op（如 `$.session.usage()`）在测试下层应答时同样要包 `{ value: … }`；`session.compact` 的 `messages` 至少一条，且每条要带 `toolUses: []`。
 
-**开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。**在桌面 app 的 session 里跑这些 `claude` 命令时**，先去掉 app 的身份环境变量：`env -u CLAUDE_CODE_ACCOUNT_UUID -u CLAUDE_CODE_USER_EMAIL -u CLAUDE_CODE_ORGANIZATION_UUID -u ANTHROPIC_BASE_URL claude plugin test …`，否则会把 `~/.claude.json` 的账号改成 app 的（只有在 CLI 里 `/login` 能改回来）。
+**开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。**在桌面 app 的 session 里跑这些 `claude` 命令时**，先去掉 app 的身份和宿主凭据环境变量：`env -u CLAUDE_CODE_ACCOUNT_UUID -u CLAUDE_CODE_USER_EMAIL -u CLAUDE_CODE_ORGANIZATION_UUID -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_HOST_SESSION_ID -u CLAUDE_CODE_OAUTH_SCOPES -u CLAUDE_CODE_ENTRYPOINT claude plugin test …`，否则会把 `~/.claude.json` 的账号改成 app 的（只有在 CLI 里 `/login` 能改回来）。
 
 ## 版本与 commit 约定
 

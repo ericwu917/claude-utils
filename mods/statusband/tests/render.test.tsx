@@ -177,6 +177,28 @@ test('a newer installed version gets one toast of its CHANGELOG, CLI only, once 
   expect(toasts).toHaveLength(1)
 })
 
+test('/cd refreshes the directory and its git at once', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const set: Record<string, unknown> = {}
+  on('state.set', ($, e: any, next) => {
+    if (e.plugin === 'statusband') set[e.key] = e.value
+    return next(e)
+  })
+  // Beneath the plugin: the engine's /cd, and the session then running in the
+  // new directory, a repo on `dev`.
+  on('command.run', () => ({ text: '' }))
+  on('session.cwd', () => ({ value: '/work/other' }) as any)
+  on('process.run', ($, e: any) =>
+    ({ value: { exitCode: 0, stdout: e.argv[1] === 'branch' ? 'dev\n' : ' 2 files changed, 5 insertions(+)\n', stderr: '' } }) as any,
+  )
+
+  await $.command.run({ command: 'cd', args: '/work/other' } as any)
+  // The refresh runs after the command settles; let it (well inside a tick).
+  await clock.advance(1000)
+  expect(set.cwd).toBe('/work/other')
+  expect(set.git).toEqual({ branch: 'dev', files: 2, add: 5, del: 0 })
+})
+
 test('draws every segment on both surfaces once the data is in', async ($, on) => {
   mock.clock(on, { now: NOW })
   const iso = (ms: number) => new Date(ms).toISOString()

@@ -693,6 +693,25 @@ export const register: Register = on => {
     return r
   })
 
+  // A move of the session's directory shows at once, not at the next tick. `/cd`
+  // raises no CwdChanged (that is the Bash tool's shell `cd`), and its command
+  // may settle before the move lands: watch a few seconds for the new directory.
+  on('command.run', { command: 'cd' }, async ($, e, next) => {
+    const r = await next(e)
+    void (async () => {
+      const before = await read($, cwd)
+      for (let i = 0; i < 10 && (await $.session.cwd()) === before; i++) await $.clock.sleep(500)
+      await refreshGit($)
+    })()
+    return r
+  })
+
+  on('classic.CwdChanged', async ($, e, next) => {
+    const r = await next(e)
+    await refreshGit($)
+    return r
+  })
+
   on('config.set', { key: 'theme' }, async ($, e, next) => {
     const r = await next(e)
     await readTheme($).catch(() => {})
