@@ -177,6 +177,42 @@ test('a newer installed version gets one toast of its CHANGELOG, CLI only, once 
   expect(toasts).toHaveLength(1)
 })
 
+test('a rate-limited Fable fetch keeps the shared reading and waits as told', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  // The account's other sessions read 30% an hour ago; this one has none yet.
+  mock.env(on, {})
+  const store = new Map<string, unknown>([['fable:acct', { pct: 30, fetchedAt: NOW - 3600_000, attemptedAt: NOW - 600_000 }]])
+  on('store.get', ($, e) => ({ value: store.get(e.key) }) as any)
+  on('store.set', ($, e) => (store.set(e.key, e.value), { value: undefined }) as any)
+  on('ui.log', () => ({ value: undefined }) as any)
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: [] } }) as any)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.295' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as any)
+  on('session.authorize', () => ({ value: { handle: 'h', kind: 'oauth' } }) as any)
+  let usageCalls = 0
+  on('http.fetch', ($, e: any) => {
+    if (e.url.endsWith('/api/oauth/profile')) return { value: { ok: true, status: 200, headers: {}, text: JSON.stringify({ account: { uuid: 'acct' } }) } } as any
+    usageCalls++
+    return { value: { ok: false, status: 429, headers: { 'Retry-After': '1200' }, text: '{"error":{}}' } } as any
+  })
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await clock.advance(1000) // the start's fetch runs unawaited; let it land
+  expect(usageCalls).toBe(1)
+  // The 429 neither blanks the account's reading nor goes unheeded.
+  expect(store.get('fable:acct')).toMatchObject({ pct: 30, fetchedAt: NOW - 3600_000, retryAt: NOW + 1200_000 })
+
+  // Inside the 20 minutes asked: no more requests, past the usual 5-minute TTL too.
+  await clock.advance(15 * 60_000)
+  expect(usageCalls).toBe(1)
+  await clock.advance(6 * 60_000)
+  expect(usageCalls).toBe(2)
+})
+
 test('/cd refreshes the directory and its git at once', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const set: Record<string, unknown> = {}

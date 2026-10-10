@@ -228,11 +228,15 @@ async function refreshFable($: EngineInterface) {
   if (prev && now - prev.attemptedAt <= USAGE_TTL) return
   const key = await accountStoreKey($, 'fable')
   const shared = key ? ((await $.store.get(key)) as Fable | undefined) : undefined
-  if (shared && now - shared.attemptedAt <= USAGE_TTL) {
+  if (shared && (now - shared.attemptedAt <= USAGE_TTL || (shared.retryAt ?? 0) > now)) {
     await update($, fable, () => shared)
     return
   }
-  let next: Fable = { pct: prev?.pct ?? null, fetchedAt: prev?.fetchedAt ?? null, attemptedAt: now }
+  if ((prev?.retryAt ?? 0) > now) return
+  // Carry the newest reading anyone has through the claim and a failed request:
+  // a session with none of its own must not blank the account's shared one.
+  const last = (shared?.fetchedAt ?? 0) > (prev?.fetchedAt ?? 0) ? shared : prev
+  let next: Fable = { pct: last?.pct ?? null, fetchedAt: last?.fetchedAt ?? null, attemptedAt: now }
   // Claim the slot before the request, so a session ticking meanwhile reuses it.
   if (key) await $.store.set(key, next)
   try {
@@ -250,6 +254,11 @@ async function refreshFable($: EngineInterface) {
         next = { pct: typeof b?.percent === 'number' ? b.percent : null, fetchedAt: now, attemptedAt: now }
       } else {
         $.ui.log(`statusband: usage fetch got HTTP ${res.status}`, { to: 'debug' })
+        if (res.status === 429) {
+          // Rate-limited: wait as told (Retry-After, in seconds), 30 min if untold.
+          const after = Number(Object.entries(res.headers).find(([k]) => k.toLowerCase() === 'retry-after')?.[1])
+          next = { ...next, retryAt: now + (after > 0 ? after * 1000 : 1800_000) }
+        }
       }
     } else {
       $.ui.log('statusband: no first-party credential for the usage fetch', { to: 'debug' })

@@ -3,7 +3,8 @@ export type Git = { branch: string; files: number; add: number; del: number }
 // today/month: ccusage over every local JSONL, i.e. both accounts on this machine.
 export type Cost = { session: number | null; today: number | null; month: number | null }
 // The session's own account's Fable weekly bucket, from /api/oauth/usage.
-export type Fable = { pct: number | null; fetchedAt: number | null; attemptedAt: number }
+// retryAt: the endpoint rate-limited the account (HTTP 429); nobody asks before it.
+export type Fable = { pct: number | null; fetchedAt: number | null; attemptedAt: number; retryAt?: number }
 // The account's latest 5h/7d reading, shared through $.store by every session of it.
 export type SharedRates = { rates: Rate[]; at: number }
 // latest: the newest CC on disk, when it is newer than the running one (↑).
