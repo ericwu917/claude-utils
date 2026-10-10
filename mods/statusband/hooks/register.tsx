@@ -509,6 +509,12 @@ function pace(label: string, r: Rate | undefined, now: number): Pace | null {
   const reset = r.resetsAt ? Date.parse(r.resetsAt) : NaN
   const hour = new Date(now).getHours()
   const offHours = hour < work.start || hour >= work.end
+  // Past its reset with no newer reading (no turn since, here or in another
+  // session of the account): the window has started over, not stood still at the
+  // old figure. 0%, no pace band, and no countdown to name until a reading lands.
+  if (!Number.isNaN(reset) && now >= reset) {
+    return { label, usage: 0, time: 0, color: offHours ? RED : rateColor(0, 0), remaining: '--' }
+  }
   let time = 0
   if (!Number.isNaN(reset)) {
     time =
@@ -814,11 +820,16 @@ export const register: Register = on => {
     const dirName = dir ? dir.split('/').pop() : '?'
     const pct = ctx?.percent ?? 0
     const used = ctx?.tokens ?? Math.round((pct * (ctx?.window ?? 0)) / 100)
-    const p7 = pace('7d', rl.find(x => x.kind === 'seven_day'), now)
+    const r7 = rl.find(x => x.kind === 'seven_day')
+    const p7 = pace('7d', r7, now)
     // Fable's weekly window shares 7d's reset, so it is paced against 7d's time;
     // stale data goes grey, which beats the off-hours red (as in statusline.sh).
+    // A reading from before a reset that has passed belongs to the window that
+    // ended: none (fb--) until the next fetch, as the 7d bar shows it started over.
+    const reset7 = r7?.resetsAt ? Date.parse(r7.resetsAt) : NaN
+    const fableLapsed = f?.fetchedAt != null && f.fetchedAt < reset7 && reset7 <= now
     let fb: { pct: number; color: string } | undefined
-    if (f?.pct != null) {
+    if (f?.pct != null && !fableLapsed) {
       const pct = Math.round(f.pct)
       const hour = new Date(now).getHours()
       const isStale = f.fetchedAt === null || now - f.fetchedAt > USAGE_STALE

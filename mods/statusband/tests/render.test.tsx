@@ -213,6 +213,58 @@ test('a rate-limited Fable fetch keeps the shared reading and waits as told', as
   expect(usageCalls).toBe(2)
 })
 
+test('a window past its reset with no newer reading draws as started over', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const iso = (ms: number) => new Date(ms).toISOString()
+  // 5h lapsed a minute ago at 82%; 7d still runs.
+  const values: Record<string, unknown> = {
+    rates: [
+      { kind: 'five_hour', percentUsed: 82, resetsAt: iso(NOW - 60_000) },
+      { kind: 'seven_day', percentUsed: 30, resetsAt: iso(NOW + 3 * 86400_000) },
+    ],
+  }
+  on('state.get', ($, e: any, next) =>
+    e.plugin === 'statusband' && e.key in values ? { value: { value: values[e.key], version: 1 } } : next(e),
+  )
+
+  const term = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await term.find({ type: 'Text', text: / 82%/ })).toBeUndefined()
+  expect(await term.find({ type: 'Text', text: /^ 0%$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /\(--\)/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: / 30%/ })).toBeDefined()
+  // The empty bar still draws (ctx, 5h, 7d): the tree validated whole.
+  expect(await term.findAll({ type: 'Raster' })).toHaveLength(3)
+  await term.unmount()
+
+  const desk = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await desk.find({ type: 'Text', text: /^0%$/ })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: /^--$/ })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: /^30%$/ })).toBeDefined()
+  await desk.unmount()
+
+  // 7d lapsed too, and Fable last read before that reset: its 70% belongs to
+  // the week that ended, so no fb figure until the next fetch.
+  values.rates = [
+    { kind: 'five_hour', percentUsed: 82, resetsAt: iso(NOW - 60_000) },
+    { kind: 'seven_day', percentUsed: 90, resetsAt: iso(NOW - 120_000) },
+  ]
+  values.fable = { pct: 70, fetchedAt: NOW - 600_000, attemptedAt: NOW - 60_000 }
+  const term2 = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await term2.find({ type: 'Text', text: /fb70%/ })).toBeUndefined()
+  expect(await term2.find({ type: 'Text', text: / 90%/ })).toBeUndefined()
+  expect(await term2.findAll({ type: 'Raster' })).toHaveLength(3)
+  await term2.unmount()
+  const desk2 = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await desk2.find({ type: 'Text', text: /fb 70%/ })).toBeUndefined()
+  await desk2.unmount()
+
+  // A Fable reading taken after the reset is the new week's: shown.
+  values.fable = { pct: 3, fetchedAt: NOW - 30_000, attemptedAt: NOW - 30_000 }
+  const term3 = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await term3.find({ type: 'Text', text: /fb3%/ })).toBeDefined()
+  await term3.unmount()
+})
+
 test('/cd refreshes the directory and its git at once', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const set: Record<string, unknown> = {}
