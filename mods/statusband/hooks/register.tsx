@@ -113,7 +113,9 @@ async function refreshGit($: EngineInterface) {
 let transcriptPath: string | null = null
 
 async function findTranscript($: EngineInterface) {
-  if (transcriptPath) return transcriptPath
+  // A session moved into another directory (into a worktree, /cd) has its
+  // transcript moved to that directory's project folder: look again.
+  if (transcriptPath && (await $.fs.exists(transcriptPath))) return transcriptPath
   const home = await $.env.get('HOME')
   const id = await $.session.id()
   if (!home) return null
