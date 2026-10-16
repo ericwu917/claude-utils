@@ -521,3 +521,115 @@ test('STATUSBAND_LONG_TASK_MIN=0 turns the notice off', async ($, on) => {
   await kit.stop(30 * 60_000, 0)
   expect(kit.posted).toEqual([])
 })
+
+// Beneath the plugin for the cache keep-warm: a session whose transcript ends in
+// a reply at NOW that wrote 1h cache (expiring at NOW + 60 min), and the main
+// thread's turns, Stops and the prompts the plugin submits.
+function keepWarmKit(on: any) {
+  mock.env(on, { HOME: '/home/me' })
+  const transcript = '/home/me/.claude/projects/-tmp/s.jsonl'
+  const reply = (at: number) => ({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { model: 'claude-opus-5-5', usage: { cache_creation: { ephemeral_1h_input_tokens: 100 } } } })
+  const kit = { submitted: [] as string[], toasts: [] as string[], replyAt: NOW, drop: false, $: null as any }
+  on('ui.toast', ($: any, e: any) => (kit.toasts.push(e.text), { value: undefined }) as any)
+  on('ui.log', () => ({ value: undefined }) as any)
+  on('prompt.submit', ($: any, e: any) => (kit.submitted.push(e.text), kit.drop ? { drop: 'no' } : { text: e.text }))
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}) as any)
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: [] } }) as any)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.299' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('session.root', () => ({ value: '/tmp' }) as any)
+  on('session.authorize', () => ({ value: null }) as any)
+  on('fs.exists', ($: any, e: any) => ({ value: e.path === transcript }) as any)
+  on('process.run', ($: any, e: any) =>
+    ({ value: e.argv[0] === 'tail' ? { exitCode: 0, stdout: JSON.stringify(reply(kit.replyAt)), stderr: '' } : { exitCode: 1, stdout: '', stderr: '' } }) as any,
+  )
+  return Object.assign(kit, {
+    async start() {
+      await kit.$.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+    },
+    // The keep-warm turn the submit started: its reply lands in the transcript,
+    // and the agents are still out when it stops.
+    async keepWarmTurn(now: number) {
+      await kit.$.turn.start({ text: '', turnId: 'k' })
+      kit.replyAt = now
+      await kit.$.turn.complete({ answer: 'ok', durationMs: 1000, isAborted: false, turnId: 'k', reason: 'completed' } as any)
+      await kit.stop(['subagent'])
+    },
+    async stop(types: string[]) {
+      await kit.$.classic.Stop({ stop_hook_active: false, background_tasks: types.map((type, i) => ({ id: `b${i}`, type, status: 'running', description: 'x' })) } as any)
+    },
+  })
+}
+
+test('an idle main thread waiting on background agents gets one keep-warm turn, in place of the warning', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = keepWarmKit(on)
+  kit.$ = $
+  await kit.start()
+  await kit.stop(['shell', 'subagent'])
+
+  // Over 10 minutes left: nothing yet.
+  await clock.advance(49 * 60_000)
+  expect(kit.submitted).toEqual([])
+
+  // 10 minutes left: a turn of its own, and no "send a message" warning.
+  await clock.advance(60_000 + 1000)
+  expect(kit.submitted).toHaveLength(1)
+  expect(kit.submitted[0]).toMatch(/^Keep-alive only:/)
+  expect(kit.toasts).toEqual(['⏳ Kept the prompt cache for tmp warm while background agents run'])
+
+  // Once per expiry.
+  await clock.advance(5 * 60_000)
+  expect(kit.submitted).toHaveLength(1)
+  expect(kit.toasts).toHaveLength(1)
+})
+
+test('an agent out for hours gets a keep-warm turn before each expiry', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = keepWarmKit(on)
+  kit.$ = $
+  await kit.start()
+  await kit.stop(['subagent'])
+  // Each keep-warm reply lands a minute past the tick that sent it.
+  let now = NOW
+  for (let n = 1; n <= 3; n++) {
+    await clock.advance(51 * 60_000)
+    now += 51 * 60_000
+    expect(kit.submitted).toHaveLength(n)
+    await kit.keepWarmTurn(now)
+  }
+})
+
+test('a dropped keep-warm prompt falls back to the warning', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = keepWarmKit(on)
+  kit.$ = $
+  kit.drop = true
+  await kit.start()
+  await kit.stop(['subagent'])
+  await clock.advance(50 * 60_000 + 1000)
+  expect(kit.submitted).toHaveLength(1)
+  expect(kit.toasts).toEqual(['⏳ Prompt cache for tmp expires at 13:00 (10 min left)'])
+})
+
+for (const waitOn of ['a shell and a monitor', 'an agent, with the main thread running again']) {
+  test(`no keep-warm turn waiting on ${waitOn}: the warning as before`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const kit = keepWarmKit(on)
+    kit.$ = $
+    await kit.start()
+    if (waitOn.startsWith('a shell')) await kit.stop(['shell', 'monitor'])
+    else {
+      await kit.stop(['subagent'])
+      await $.turn.start({ text: '', turnId: 't' })
+    }
+    await clock.advance(50 * 60_000 + 1000)
+    expect(kit.submitted).toEqual([])
+    expect(kit.toasts).toEqual(['⏳ Prompt cache for tmp expires at 13:00 (10 min left)'])
+  })
+}

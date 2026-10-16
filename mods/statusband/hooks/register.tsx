@@ -25,6 +25,7 @@ const version = atom({ plugin: 'statusband', key: 'version' } as const, null as 
 const context = atom({ plugin: 'statusband', key: 'context' } as const, null as Context | null)
 const ctxWarned = atom({ plugin: 'statusband', key: 'ctxWarned' } as const, false)
 const taskStartedAt = atom({ plugin: 'statusband', key: 'taskStartedAt' } as const, null as number | null)
+const awaitingAgents = atom({ plugin: 'statusband', key: 'awaitingAgents' } as const, false)
 
 // Work hours [start, end), as statusline.sh's STATUSLINE_WORK_START / _END
 // (default 9-22): outside them the 5h/7d bars go red, and 7d paces on them
@@ -190,10 +191,22 @@ async function refreshCacheExpiry($: EngineInterface) {
 // would look like a cache about to lapse.
 let lastMainResponseAt = 0
 
-// Ten minutes (alerts.cacheWarnMs) before a warm cache lapses: a toast, and a
-// Discord message when a webhook is configured, so a pause can end before the
-// next turn pays to rebuild the whole prefix. Once per expiry; a cache whose TTL
-// is no longer than the lead time (5m) never qualifies.
+// Background task types whose report wakes the main thread: what an idle main
+// thread waits on when a keep-warm turn is worth its cost (a monitor may run on
+// for good, a shell is not an agent).
+const AGENT_TASKS = new Set(['subagent', 'workflow'])
+
+// The keep-warm turn's prompt: one request over the cached prefix renews its TTL.
+const KEEP_WARM_PROMPT =
+  'Keep-alive only: background agents are still running and the prompt cache is about to lapse. ' +
+  'Reply with the single word "ok" and nothing else: no tools, no task list, no wrap-up.'
+
+// Ten minutes (alerts.cacheWarnMs) before a warm cache lapses. While the main
+// thread sits idle waiting on background agents, a keep-warm turn of its own
+// (one cache read instead of a rebuild when the agents report back); otherwise
+// a toast, and a Discord message when a webhook is configured, so a pause can
+// end before the next turn pays to rebuild the whole prefix. Once per expiry; a
+// cache whose TTL is no longer than the lead time (5m) never qualifies.
 async function checkCacheWarning($: EngineInterface) {
   const at = await read($, cacheExpiresAt)
   const ttl = await read($, cacheTtlMs)
@@ -203,6 +216,13 @@ async function checkCacheWarning($: EngineInterface) {
   const left = expires - now
   if (left <= 0 || left > alerts.cacheWarnMs || (await read($, cacheWarnedFor)) === expires) return
   await update($, cacheWarnedFor, () => expires)
+  if (await read($, awaitingAgents)) {
+    const r = await $.prompt.submit({ text: KEEP_WARM_PROMPT }).catch(() => undefined)
+    if (r && r.drop === undefined) {
+      $.ui.toast(`⏳ Kept the prompt cache for ${await whereLabel($)} warm while background agents run`, { timeoutMs: 15_000 })
+      return
+    }
+  }
   const text = `Prompt cache for ${await whereLabel($)} expires at ${hhmm(expires)} (${Math.ceil(left / 60_000)} min left)`
   $.ui.toast(`⏳ ${text}`, { timeoutMs: 15_000 })
   await notifyAttention($, `⏳ ${text}. Send a message to keep it warm.`)
@@ -829,6 +849,7 @@ export const register: Register = on => {
       await update($, cacheTtlMs, () => null)
       await update($, cacheWarnedFor, () => null)
       await update($, taskStartedAt, () => null)
+      await update($, awaitingAgents, () => false)
     }
     return next(e)
   })
@@ -875,8 +896,10 @@ export const register: Register = on => {
   // A task runs from the turn that opens it until the main thread stops with no
   // background work left to wake it: each background agent that reports back
   // starts a turn of its own, all in the same task. Crons (/loop, wakeups) do
-  // not hold it open. A subagent's run raises no turn.start.
+  // not hold it open. A subagent's run raises no turn.start. A running main
+  // thread waits on nothing: no keep-warm turn until its Stop says otherwise.
   on('turn.start', async ($, e, next) => {
+    await update($, awaitingAgents, () => false)
     if ((await read($, taskStartedAt)) === null) {
       const now = await $.clock.now()
       await update($, taskStartedAt, () => now)
@@ -887,7 +910,9 @@ export const register: Register = on => {
   on('classic.Stop', async ($, e, next) => {
     const r = await next(e)
     // Another Stop hook's block sends the turn on.
-    if (r.block !== undefined || e.background_tasks?.length) return r
+    if (r.block !== undefined) return r
+    await update($, awaitingAgents, () => e.background_tasks?.some(t => AGENT_TASKS.has(t.type)) ?? false)
+    if (e.background_tasks?.length) return r
     const started = await read($, taskStartedAt)
     if (started === null) return r
     await update($, taskStartedAt, () => null)

@@ -91,6 +91,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Raster 底轨色跟 `$.config.list()` 里的 `theme`（`light*` 浅灰，其余深灰；`auto` 看不到终端底色，按深色），`config.set{key=theme}` 时重读
 - 今日/本月：读 `~/.claude/ccusage-cache.json`，过期调 `~/.claude/statusline-refresh-caches.sh ccusage`（本机所有 JSONL = 所有账号合计）
 - 缓存快过期提醒（`checkCacheWarning`，跟 60s 定时器走）：到期 = max(transcript 算的到期, 主线程最后一次 API 响应 + TTL)——后者防长 turn 中途误报（transcript 那个只在 turn 结束时更新）。剩 ≤10 分钟 toast 一次（`cacheWarnedFor` 记着已提醒的到期时间）；5m TTL 不提醒（一开始就在 10 分钟内）。`~/.config/discord-webhook` 存在就直接 POST `{content}` 过去（同 `~/bin/discord-notify`，不依赖 PATH 里有 `~/bin`），URL 不落日志。提醒和长任务通知都用 `whereLabel` 标出是哪个 session：目录 + `[session 名]`
+- 后台 agent 跑着时自动续缓存（keep-warm，同在 `checkCacheWarning`）：主线程 `classic.Stop` 时 `background_tasks` 里有 `subagent`/`workflow`（shell、monitor 不算——monitor 可能一直跑）就记 `awaitingAgents`，主线程下一个 `turn.start` 清掉。到了同一个提醒点（剩 ≤ `STATUSBAND_CACHE_WARN_MIN`）、`awaitingAgents` 为真时，改为 `$.prompt.submit` 一条带插件署名的 keep-alive（让模型只回 "ok"、不调工具）代替提醒：一次请求读整段前缀就把 TTL 续上，比 agent 回来后重写 1h 缓存便宜得多；submit 失败或被 drop 才退回提醒。**只对后台 agent 有效**：前台 Agent 调用时主线程卡在 turn 里不 idle，`$.prompt.submit` 要等它结束才跑，毫无意义；`$.model.complete` 是另一个前缀，续不了主 session 的缓存
 - 通知去哪（`notifyAttention`，长任务和缓存提醒共用）：人不在 Mac 前（`ioreg -c IOHIDSystem` 的 `HIDIdleTime` ≥ `STATUSBAND_AWAY_MIN`，默认 3 分钟；锁屏也一直累加；读不到按不在）→ Discord；人在、终端 session → `$.ui.notify`（Ghostty 自己在本 tab 有焦点时不弹，实测，需打开 Ghostty 的通知）；人在、桌面 app session → 不发，app 自带的 Task complete 横幅在 app 不在前台时会弹（内容是 app 对最后回复的总结）。"在场"不用 PushNotification 的 `user_present`：那是 CC 按本 session 多久没输入判断的，只有真推一次才拿得到
 
 **踩过的坑**：

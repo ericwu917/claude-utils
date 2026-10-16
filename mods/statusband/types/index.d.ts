@@ -34,6 +34,9 @@ declare module 'claude-code' {
       ctxWarned: boolean
       // When the running task's first turn started; null between tasks.
       taskStartedAt: number | null
+      // The main thread stopped with background agents (or workflows) still to
+      // report; false from its next turn's start.
+      awaitingAgents: boolean
     }
   }
 }
