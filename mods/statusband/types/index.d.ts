@@ -32,6 +32,8 @@ declare module 'claude-code' {
       context: Context | null
       // The context-fill toast was raised and the fill has not dropped back since.
       ctxWarned: boolean
+      // When the running task's first turn started; null between tasks.
+      taskStartedAt: number | null
     }
   }
 }

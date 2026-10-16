@@ -24,6 +24,7 @@ const model = atom({ plugin: 'statusband', key: 'model' } as const, null as stri
 const version = atom({ plugin: 'statusband', key: 'version' } as const, null as Version | null)
 const context = atom({ plugin: 'statusband', key: 'context' } as const, null as Context | null)
 const ctxWarned = atom({ plugin: 'statusband', key: 'ctxWarned' } as const, false)
+const taskStartedAt = atom({ plugin: 'statusband', key: 'taskStartedAt' } as const, null as number | null)
 
 // Work hours [start, end), as statusline.sh's STATUSLINE_WORK_START / _END
 // (default 9-22): outside them the 5h/7d bars go red, and 7d paces on them
@@ -32,8 +33,11 @@ const work = { start: 9, end: 22 }
 
 // Alert thresholds: the context-fill toast (STATUSBAND_CTX_WARN_PCT, default 60)
 // and how long before a cache lapses its warning goes out
-// (STATUSBAND_CACHE_WARN_MIN, default 10). Read with the work hours.
-const alerts = { ctxPct: 60, cacheWarnMs: 10 * 60_000 }
+// (STATUSBAND_CACHE_WARN_MIN, default 10), and how long a task runs before its
+// end is reported (STATUSBAND_LONG_TASK_MIN, default 10, 0 off), and how long
+// the Mac's keyboard and mouse sit idle before the person counts as away
+// (STATUSBAND_AWAY_MIN, default 3). Read with the work hours.
+const alerts = { ctxPct: 60, cacheWarnMs: 10 * 60_000, longTaskMs: 10 * 60_000, awayMs: 3 * 60_000 }
 
 async function readEnvConfig($: EngineInterface) {
   const int = (v: string | undefined) => (v !== undefined && /^\d{1,3}$/.test(v) ? Number(v) : NaN)
@@ -46,6 +50,10 @@ async function readEnvConfig($: EngineInterface) {
   if (ctxPct >= 1 && ctxPct <= 100) alerts.ctxPct = ctxPct
   const cacheMin = int(await $.env.get('STATUSBAND_CACHE_WARN_MIN'))
   if (cacheMin >= 1 && cacheMin <= 59) alerts.cacheWarnMs = cacheMin * 60_000
+  const taskMin = int(await $.env.get('STATUSBAND_LONG_TASK_MIN'))
+  if (!Number.isNaN(taskMin)) alerts.longTaskMs = taskMin * 60_000
+  const awayMin = int(await $.env.get('STATUSBAND_AWAY_MIN'))
+  if (!Number.isNaN(awayMin)) alerts.awayMs = awayMin * 60_000
 }
 const CCUSAGE_TTL = 600_000
 const USAGE_TTL = 300_000 // between Fable fetch attempts, failures included
@@ -125,6 +133,31 @@ async function findTranscript($: EngineInterface) {
   return (transcriptPath = found.stdout.split('\n')[0] || null)
 }
 
+// The session's name as the sidebar shows it, which no API hands a mod: the last
+// title the person or the app set (custom-title), else the generated one (ai-title).
+async function sessionTitle($: EngineInterface) {
+  const path = await findTranscript($)
+  if (!path) return null
+  const rows = await $.process.run(['grep', '-E', '"type":"(custom|ai)-title"', path], { timeoutMs: 5000 })
+  let custom: string | undefined
+  let ai: string | undefined
+  for (const line of rows.stdout.split('\n')) {
+    try {
+      const v = JSON.parse(line)
+      if (v.type === 'custom-title' && v.customTitle) custom = v.customTitle
+      if (v.type === 'ai-title' && v.aiTitle) ai = v.aiTitle
+    } catch {}
+  }
+  return custom ?? ai ?? null
+}
+
+// Which session a notice is about: the directory, and the session's name.
+async function whereLabel($: EngineInterface) {
+  const dir = (await read($, cwd))?.split('/').pop() ?? '?'
+  const title = await sessionTitle($).catch(() => null)
+  return title ? `${dir} [${title}]` : dir
+}
+
 // Prompt-cache expiry, ported from statusline.sh: anchored on the later of the
 // last main-thread assistant entry and the last idle recap (away_summary, a
 // model call over the same prefix that renews the TTL); TTL is 5m only when that
@@ -170,10 +203,31 @@ async function checkCacheWarning($: EngineInterface) {
   const left = expires - now
   if (left <= 0 || left > alerts.cacheWarnMs || (await read($, cacheWarnedFor)) === expires) return
   await update($, cacheWarnedFor, () => expires)
-  const dir = (await read($, cwd))?.split('/').pop() ?? '?'
-  const text = `Prompt cache for ${dir} expires at ${hhmm(expires)} (${Math.ceil(left / 60_000)} min left)`
+  const text = `Prompt cache for ${await whereLabel($)} expires at ${hhmm(expires)} (${Math.ceil(left / 60_000)} min left)`
   $.ui.toast(`⏳ ${text}`, { timeoutMs: 15_000 })
-  await notifyDiscord($, `⏳ ${text}. Send a message to keep it warm.`)
+  await notifyAttention($, `⏳ ${text}. Send a message to keep it warm.`)
+}
+
+// Where a notice goes turns on whether the person is at the Mac: away, Discord
+// (the phone); there, a terminal session's desktop notification, which Ghostty
+// holds back while this session's tab has focus. A desktop-app session needs
+// nothing then: the app's own task-complete banner covers it.
+async function notifyAttention($: EngineInterface, text: string) {
+  if (await isAway($)) return notifyDiscord($, text)
+  if (isTerminalSession) await $.ui.notify(text, { title: 'Claude Code' }).catch(() => {})
+}
+
+// Away: the Mac's keyboard and mouse idle (HIDIdleTime, in ns; a locked screen
+// keeps counting) for STATUSBAND_AWAY_MIN. Unreadable counts as away, so the
+// notice still goes out.
+async function isAway($: EngineInterface) {
+  try {
+    const r = await $.process.run(['ioreg', '-c', 'IOHIDSystem', '-d', '4'], { timeoutMs: 5000 })
+    const ns = /"HIDIdleTime" = (\d+)/.exec(r.stdout)?.[1]
+    return ns === undefined || Number(ns) / 1e6 >= alerts.awayMs
+  } catch {
+    return true
+  }
 }
 
 // Posts to the Discord webhook whose URL is in ~/.config/discord-webhook, as
@@ -196,6 +250,16 @@ async function notifyDiscord($: EngineInterface, content: string) {
   } catch (err) {
     $.ui.log(`statusband: Discord webhook failed: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
   }
+}
+
+// A long task's end. Not through PushNotification: called from a mod it reports
+// pushSent and yet never reaches the phone (the model's own call does).
+async function notifyTaskDone($: EngineInterface, ms: number, last: string | undefined) {
+  const head = `Done in ${await whereLabel($)} after ${Math.round(ms / 60_000)} min`
+  const gist = (last ?? '').replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim()
+  const room = 200 - head.length - 2 // a one-line glance on the phone
+  const message = gist ? `${head}: ${gist.length > room ? `${gist.slice(0, room - 1)}…` : gist}` : head
+  await notifyAttention($, `✅ ${message}`)
 }
 
 // Today's and month-to-date cost: the CLI statusline's ccusage cache, refreshed
@@ -764,6 +828,7 @@ export const register: Register = on => {
       await update($, cacheExpiresAt, () => null)
       await update($, cacheTtlMs, () => null)
       await update($, cacheWarnedFor, () => null)
+      await update($, taskStartedAt, () => null)
     }
     return next(e)
   })
@@ -799,9 +864,35 @@ export const register: Register = on => {
     const r = await next(e)
     await refreshGit($)
     if (e.agentId === undefined) {
+      // An interrupted or failed task raises no Stop: it is not one to report.
+      if (e.reason === 'aborted' || e.reason === 'error') await update($, taskStartedAt, () => null)
       await refreshCacheExpiry($)
       await refreshModelAndVersion($) // /model can switch it between turns
     }
+    return r
+  })
+
+  // A task runs from the turn that opens it until the main thread stops with no
+  // background work left to wake it: each background agent that reports back
+  // starts a turn of its own, all in the same task. Crons (/loop, wakeups) do
+  // not hold it open. A subagent's run raises no turn.start.
+  on('turn.start', async ($, e, next) => {
+    if ((await read($, taskStartedAt)) === null) {
+      const now = await $.clock.now()
+      await update($, taskStartedAt, () => now)
+    }
+    return next(e)
+  })
+
+  on('classic.Stop', async ($, e, next) => {
+    const r = await next(e)
+    // Another Stop hook's block sends the turn on.
+    if (r.block !== undefined || e.background_tasks?.length) return r
+    const started = await read($, taskStartedAt)
+    if (started === null) return r
+    await update($, taskStartedAt, () => null)
+    const ms = (await $.clock.now()) - started
+    if (alerts.longTaskMs > 0 && ms >= alerts.longTaskMs) void notifyTaskDone($, ms, e.last_assistant_message)
     return r
   })
 

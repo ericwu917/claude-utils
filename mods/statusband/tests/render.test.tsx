@@ -52,7 +52,7 @@ test('/clear drops the old conversation\'s cache figures; other endings keep the
   await $.session.end({ reason: 'other' } as any)
   expect(cleared).toEqual([])
   await $.session.end({ reason: 'clear' } as any)
-  expect(cleared.sort()).toEqual(['cacheExpiresAt', 'cacheHit', 'cacheTtlMs', 'cacheWarnedFor'])
+  expect(cleared.sort()).toEqual(['cacheExpiresAt', 'cacheHit', 'cacheTtlMs', 'cacheWarnedFor', 'taskStartedAt'])
 })
 
 test('a compaction shows its new size at once; a precompute does not', async ($, on) => {
@@ -334,4 +334,190 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
   expect(await desk.find({ type: 'Text', text: /^70k\/200k$/ })).toBeDefined()
   expect(await desk.find({ type: 'Text', text: /fb 67%/ })).toBeDefined()
   await desk.unmount()
+})
+
+// Beneath the plugin for the long-task notice: the turn, and a Discord webhook
+// file whose posts are kept.
+function taskKit(on: any, clock: any, env: Record<string, string> = {}) {
+  mock.env(on, { HOME: '/home/me', ...env })
+  on('ui.log', () => ({ value: undefined }) as any)
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
+  on('classic.Stop', () => ({}) as any)
+  const kit = {
+    files: new Set(['/home/me/.config/discord-webhook']),
+    posted: [] as string[],
+    async turn() {
+      await kit.$.turn.start({ text: '', turnId: 't' })
+    },
+    async stop(after: number, background: number, last = 'All **done**') {
+      await clock.advance(after)
+      await kit.$.classic.Stop({ stop_hook_active: false, last_assistant_message: last, background_tasks: Array.from({ length: background }, (_, i) => ({ id: `b${i}`, type: 'subagent', status: 'running', description: 'x' })) } as any)
+      await clock.advance(1000) // the notice goes out unawaited; let it land
+    },
+    $: null as any,
+  }
+  on('fs.exists', ($: any, e: any) => ({ value: kit.files.has(e.path) }) as any)
+  on('fs.read', () => ({ value: 'https://discord.example/hook\n' }) as any)
+  on('http.fetch', ($: any, e: any) => (kit.posted.push(JSON.parse(e.init.body).content), { value: { ok: true, status: 204, text: '' } }) as any)
+  return kit
+}
+
+test('a task of 10 minutes or more goes to Discord once nothing in the background can wake it', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = taskKit(on, clock)
+  kit.$ = $
+
+  // Under 10 minutes: nothing.
+  await kit.turn()
+  await kit.stop(9 * 60_000, 0)
+  expect(kit.posted).toEqual([])
+
+  // A background agent holds the task open; its report's turn ends it.
+  await kit.turn()
+  await kit.stop(8 * 60_000, 1)
+  expect(kit.posted).toEqual([])
+  await kit.turn() // the agent reports back: same task
+  await kit.stop(4 * 60_000, 0)
+  expect(kit.posted).toEqual(['✅ Done in ? after 12 min: All done'])
+
+  // A later Stop with no turn between reports nothing again.
+  await kit.stop(20 * 60_000, 0)
+  expect(kit.posted).toHaveLength(1)
+
+  // A long last reply is cut to one line of 200.
+  await kit.turn()
+  await kit.stop(11 * 60_000, 0, 'x'.repeat(400))
+  expect(kit.posted[1]).toHaveLength(2 + 200)
+})
+
+test('the notice names the session: its set title, else the generated one', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = taskKit(on, clock)
+  kit.$ = $
+  on('session.id', () => ({ value: 's' }) as any)
+  on('session.root', () => ({ value: '/tmp' }) as any)
+  kit.files.add('/home/me/.claude/projects/-tmp/s.jsonl')
+  let rows = ['{"type":"ai-title","aiTitle":"Generated"}']
+  on('process.run', () => ({ value: { exitCode: 0, stdout: rows.join('\n'), stderr: '' } }) as any)
+
+  await kit.turn()
+  await kit.stop(11 * 60_000, 0)
+  rows = [...rows, '{"type":"custom-title","customTitle":"Old"}', '{"type":"ai-title","aiTitle":"Later"}', '{"type":"custom-title","customTitle":"Mine"}']
+  await kit.turn()
+  await kit.stop(11 * 60_000, 0)
+  expect(kit.posted).toEqual(['✅ Done in ? [Generated] after 11 min: All done', '✅ Done in ? [Mine] after 11 min: All done'])
+})
+
+test('a transcript moved with its session (into a worktree) is found again', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = taskKit(on, clock)
+  kit.$ = $
+  on('session.id', () => ({ value: 's' }) as any)
+  let root = '/tmp'
+  on('session.root', () => ({ value: root }) as any)
+  const before = '/home/me/.claude/projects/-tmp/s.jsonl'
+  const after = '/home/me/.claude/projects/-tmp--claude-worktrees-x/s.jsonl'
+  kit.files.add(before)
+  on('process.run', ($, e: any) =>
+    ({
+      value: kit.files.has(e.argv.at(-1))
+        ? { exitCode: 0, stdout: `{"type":"custom-title","customTitle":"${e.argv.at(-1) === after ? 'Moved' : 'Here'}"}`, stderr: '' }
+        : { exitCode: 1, stdout: '', stderr: '' },
+    }) as any,
+  )
+
+  await kit.turn()
+  await kit.stop(11 * 60_000, 0)
+  kit.files.delete(before)
+  kit.files.add(after)
+  root = '/tmp/.claude/worktrees/x'
+  await kit.turn()
+  await kit.stop(11 * 60_000, 0)
+  expect(kit.posted).toEqual(['✅ Done in ? [Here] after 11 min: All done', '✅ Done in ? [Moved] after 11 min: All done'])
+})
+
+test('an interrupted task is not reported', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = taskKit(on, clock)
+  kit.$ = $
+  on('turn.complete', () => ({ text: '' }))
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('session.root', () => ({ value: '/tmp' }) as any)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.295' } }) as any)
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as any)
+
+  await kit.turn()
+  await clock.advance(15 * 60_000)
+  await $.turn.complete({ answer: '', durationMs: 15 * 60_000, isAborted: true, turnId: 't', reason: 'aborted' } as any)
+  await kit.stop(0, 0)
+  expect(kit.posted).toEqual([])
+})
+
+test('at the Mac, a terminal session gets a desktop notification instead and the app nothing; away, Discord', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = taskKit(on, clock)
+  kit.$ = $
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: [] } }) as any)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.295' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('session.root', () => ({ value: '/tmp' }) as any)
+  on('session.authorize', () => ({ value: null }) as any)
+  let idleMs = 30_000
+  on('process.run', ($, e: any) =>
+    ({
+      value:
+        e.argv[0] === 'ioreg'
+          ? { exitCode: 0, stdout: `    | |     "HIDIdleTime" = ${idleMs * 1e6}\n`, stderr: '' }
+          : { exitCode: 1, stdout: '', stderr: '' },
+    }) as any,
+  )
+  const notified: string[] = []
+  on('ui.notify', ($, e: any) => (notified.push(e.text), { value: { isSent: true, channel: 'ghostty' } }) as any)
+  const long = async () => {
+    await kit.turn()
+    await kit.stop(11 * 60_000, 0)
+  }
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await long()
+  expect(notified).toHaveLength(1)
+  expect(notified[0]).toMatch(/^✅ Done in .* after 11 min: All done$/)
+  expect(kit.posted).toEqual([])
+
+  idleMs = 3 * 60_000 // STATUSBAND_AWAY_MIN's default: away
+  await long()
+  expect(notified).toHaveLength(1)
+  expect(kit.posted).toEqual([notified[0]])
+
+  idleMs = 30_000
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await long()
+  expect(notified).toHaveLength(1)
+  expect(kit.posted).toHaveLength(1)
+})
+
+// Last: it sets the module's threshold to 0.
+test('STATUSBAND_LONG_TASK_MIN=0 turns the notice off', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = taskKit(on, clock, { STATUSBAND_LONG_TASK_MIN: '0' })
+  kit.$ = $
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: [] } }) as any)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.295' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('session.root', () => ({ value: '/tmp' }) as any)
+  on('session.authorize', () => ({ value: null }) as any)
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as any)
+
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await kit.turn()
+  await kit.stop(30 * 60_000, 0)
+  expect(kit.posted).toEqual([])
 })
