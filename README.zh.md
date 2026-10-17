@@ -68,13 +68,13 @@ Local scope 的 MCP server 会跟到 worktree：local scope（`claude mcp add` �
 
 CLI 进度条的底轨颜色跟 CC 的主题（`/config` → theme）：`light*` 用浅灰，其余（含 `auto`）用深灰。
 
-配色阈值、7d 工作时段节奏都和原 statusline 一致；工作时段读 `STATUSLINE_WORK_START` / `STATUSLINE_WORK_END`（默认 9–22），建议写在 `settings.json` 的 `env` 里 —— 桌面 app 不读 shell 的 rc 文件。**按账号的数据（5h/7d、Fable）一律取当前 session 自己的账号**（`$.session.usage()`、`$.session.authorize()` + `$.http.fetch`），不读钥匙串 —— CLI 和 app 可以登录不同账号。今日/本月费用来自 ccusage，统计的是本机所有 JSONL（即两个账号合计），通过 `statusline-refresh-caches.sh ccusage` 刷新缓存。
+配色阈值、7d 工作时段节奏都和原 statusline 一致；工作时段读 `STATUSLINE_WORK_START` / `STATUSLINE_WORK_END`（默认 9–22），建议写在 `settings.json` 的 `env` 里 —— 桌面 app 不读 shell 的 rc 文件。**按账号的数据（5h/7d、Fable）一律取当前 session 自己的账号**（`$.session.usage()`、`$.session.authorize()` + `$.http.fetch`），不读钥匙串 —— CLI 和 app 可以登录不同账号。今日/本月费用来自 ccusage，统计的是本机所有 JSONL（即两个账号合计），缓存由 `install.sh` 装的 LaunchAgent（`com.taige.claude-refresh-caches`）每 30 分钟跑一次 `statusline-refresh-caches.sh ccusage` 刷新。
 
 改完跑 `claude plugin validate mods/statusband` 和 `claude plugin test mods/statusband`（terminal / desktop 两种 surface 的渲染测试）。
 
 ### statusline/statusline.sh — 双行状态栏（已退役，备用）
 
-被上面的 statusband mod 取代；`install.sh --statusline` 仍可安装（连同配套的 `hooks/last-reply.sh` Stop hook，给 `⏱` 段记上次回复时间）。慢数据（ccusage 费用、Fable 用量）的刷新抽在 `statusline/statusline-refresh-caches.sh`，mod 也复用其中 ccusage 部分。详见 [`statusline/README.md`](statusline/README.md)。
+被上面的 statusband mod 取代；`install.sh --statusline` 仍可安装（连同配套的 `hooks/last-reply.sh` Stop hook，给 `⏱` 段记上次回复时间）。慢数据（ccusage 费用、Fable 用量）的刷新抽在 `statusline/statusline-refresh-caches.sh`，其中 ccusage 部分由 LaunchAgent 定时跑，mod 和 statusline 共用。详见 [`statusline/README.md`](statusline/README.md)。
 
 ## 架构
 

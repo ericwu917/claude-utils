@@ -20,6 +20,12 @@ cp -R mods/statusband ~/.claude/mods/
 cp statusline/statusline-refresh-caches.sh ~/.claude/
 ```
 
+The today/month cost cache is refreshed only by a LaunchAgent (the mod and the statusline just read it); without it they show `--`. Write `~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist` from the template in `install.sh`'s `install_launch_agent` (fill in your `~/.claude` and home paths), then load it:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist
+```
+
 ## Target state
 
 After merging, `~/.claude/settings.json` must contain the fields below (preserve any other existing fields; merge same-named fields).
@@ -86,4 +92,4 @@ If `install.sh` reports a conflict, paste this into Claude Code:
 
 ## Uninstall
 
-Delete the fields listed under "Target state" (and the legacy ones if you added them), then remove the copied files: `~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits,last-reply}.sh`, `~/.claude/mods/statusband/`, `~/.claude/statusline-refresh-caches.sh`, `~/.claude/statusline-command.sh`. An `uninstall.sh` is on the roadmap.
+Delete the fields listed under "Target state" (and the legacy ones if you added them), then remove the copied files: `~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits,last-reply}.sh`, `~/.claude/mods/statusband/`, `~/.claude/statusline-refresh-caches.sh`, `~/.claude/statusline-command.sh`. Unload and remove the LaunchAgent: `launchctl bootout gui/$(id -u)/com.taige.claude-refresh-caches`, then delete `~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist`. An `uninstall.sh` is on the roadmap.

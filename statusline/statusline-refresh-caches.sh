@@ -1,6 +1,7 @@
 #!/bin/bash
-# Refresh the statusline's slow data caches. Shared by statusline.sh (CLI) and
-# the statusband mod (desktop app); both only ever read the cache files.
+# Refresh the statusline's slow data caches; statusline.sh and the statusband
+# mod only ever read the cache files. ccusage runs from launchd every 30
+# minutes (install.sh sets it up); usage is forked by statusline.sh.
 #
 #   statusline-refresh-caches.sh [ccusage|usage]...   (no args: both)
 #
@@ -13,10 +14,24 @@
 
 NOW=$(date +%s)
 
-# Drop a lock left by a dead refresher (older than 60s).
-clear_stale_lock() {
-    [ -d "$1" ] && [ $(( NOW - $(stat -f %m "$1") )) -gt 60 ] && rmdir "$1" 2>/dev/null
-    return 0
+# Take the mkdir lock at $LOCK, or fail while another refresher holds it.
+# The holder's pid is kept inside: a ccusage run can take minutes, so age
+# alone can't tell a live holder from a dead one (a 60s rule broke live locks
+# and stacked runs). Age is only the last resort (pid reuse, a hung run).
+# $$, not $BASHPID (bash 3.2): the main script waits on the refresher subshell.
+take_lock() {
+    local pid
+    if [ -d "$LOCK" ]; then
+        pid=$(cat "$LOCK/pid" 2>/dev/null)
+        if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } \
+            || [ $(( NOW - $(stat -f %m "$LOCK") )) -gt 1800 ]; then
+            rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null
+        fi
+    fi
+    mkdir "$LOCK" 2>/dev/null || return 1
+    echo $$ > "$LOCK/pid"
+    # Release only our own lock: one taken over as stale may belong to a successor.
+    trap '[ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -f "$LOCK/pid" && rmdir "$LOCK" 2>/dev/null' EXIT
 }
 
 # Today's and month-to-date cost, from ccusage (scans the JSONL, hence cached).
@@ -29,9 +44,7 @@ refresh_ccusage() (
     BIN=$(command -v ccusage 2>/dev/null)
     [ -z "$BIN" ] && [ -x "$HOME/.bun/bin/ccusage" ] && BIN="$HOME/.bun/bin/ccusage"
     [ -n "$BIN" ] || exit 0
-    clear_stale_lock "$LOCK"
-    mkdir "$LOCK" 2>/dev/null || exit 0
-    trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+    take_lock || exit 0
 
     TZ_NAME=${STATUSLINE_CCUSAGE_TZ:-$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')}
     TZ_NAME=${TZ_NAME:-UTC}
@@ -73,9 +86,7 @@ refresh_usage() (
     # Gate on attempted_at, not fetched_at: a failed refresh (401/429/offline)
     # still bumps it, so failures back off one TTL instead of retrying every call.
     [ $(( NOW - ATTEMPTED_AT )) -gt "$TTL" ] || exit 0
-    clear_stale_lock "$LOCK"
-    mkdir "$LOCK" 2>/dev/null || exit 0
-    trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+    take_lock || exit 0
     exec </dev/null
 
     # Undocumented endpoint, so the shape is as observed: a limits[] entry

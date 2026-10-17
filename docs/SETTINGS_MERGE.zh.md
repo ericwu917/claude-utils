@@ -20,6 +20,12 @@ cp -R mods/statusband ~/.claude/mods/
 cp statusline/statusline-refresh-caches.sh ~/.claude/
 ```
 
+今日/本月费用缓存只由 LaunchAgent 刷新（mod 和 statusline 只读），没装的话这两格显示 `--`。照 `install.sh` 里 `install_launch_agent` 的模板写 `~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist`（换成你的 `~/.claude` 和 home 路径），再加载：
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist
+```
+
 ## 目标状态
 
 合并完成后，`~/.claude/settings.json` 必须包含以下字段（已有字段保留、同名字段合并）：
@@ -86,4 +92,4 @@ cp statusline/statusline-refresh-caches.sh ~/.claude/
 
 ## 卸载
 
-删除"目标状态"里列出的字段（加过旧 statusline 的连同那几项），再删掉拷贝出来的文件：`~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits,last-reply}.sh`、`~/.claude/mods/statusband/`、`~/.claude/statusline-refresh-caches.sh`、`~/.claude/statusline-command.sh`。现阶段暂无 `uninstall.sh`。
+删除"目标状态"里列出的字段（加过旧 statusline 的连同那几项），再删掉拷贝出来的文件：`~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits,last-reply}.sh`、`~/.claude/mods/statusband/`、`~/.claude/statusline-refresh-caches.sh`、`~/.claude/statusline-command.sh`。再卸掉 LaunchAgent：`launchctl bootout gui/$(id -u)/com.taige.claude-refresh-caches`，然后删 `~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist`。现阶段暂无 `uninstall.sh`。

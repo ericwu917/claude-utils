@@ -68,13 +68,13 @@ A Claude Code mod (a plugin of function hooks) that draws an `AbovePrompt` band,
 
 The CLI bars' track follows CC's theme (`/config` → theme): light grey for `light*` themes, dark grey otherwise (including `auto`).
 
-Color thresholds and the 7d work-hours pacing match the old statusline; work hours come from `STATUSLINE_WORK_START` / `STATUSLINE_WORK_END` (default 9–22), best set in `settings.json`'s `env` — the desktop app doesn't read your shell rc files. **Per-account data (5h/7d, Fable) always comes from the session's own account** (`$.session.usage()`, `$.session.authorize()` + `$.http.fetch`), never the keychain — the CLI and the app may be signed in as different accounts. Today/month cost comes from ccusage over every local JSONL (i.e. all accounts on the machine), its cache refreshed through `statusline-refresh-caches.sh ccusage`.
+Color thresholds and the 7d work-hours pacing match the old statusline; work hours come from `STATUSLINE_WORK_START` / `STATUSLINE_WORK_END` (default 9–22), best set in `settings.json`'s `env` — the desktop app doesn't read your shell rc files. **Per-account data (5h/7d, Fable) always comes from the session's own account** (`$.session.usage()`, `$.session.authorize()` + `$.http.fetch`), never the keychain — the CLI and the app may be signed in as different accounts. Today/month cost comes from ccusage over every local JSONL (i.e. all accounts on the machine), its cache refreshed every 30 minutes by a LaunchAgent (`com.taige.claude-refresh-caches`, set up by `install.sh`) running `statusline-refresh-caches.sh ccusage`.
 
 After a change, run `claude plugin validate mods/statusband` and `claude plugin test mods/statusband` (render tests on the terminal and desktop surfaces).
 
 ### statusline/statusline.sh — dual-line statusline (retired, fallback)
 
-Replaced by the statusband mod above; `install.sh --statusline` still installs it (with its companion `hooks/last-reply.sh` Stop hook, which timestamps replies for the `⏱` segment). The slow-data refreshers (ccusage cost, Fable usage) live in `statusline/statusline-refresh-caches.sh`, whose ccusage half the mod reuses. Full details: [`statusline/README.md`](statusline/README.md).
+Replaced by the statusband mod above; `install.sh --statusline` still installs it (with its companion `hooks/last-reply.sh` Stop hook, which timestamps replies for the `⏱` segment). The slow-data refreshers (ccusage cost, Fable usage) live in `statusline/statusline-refresh-caches.sh`; its ccusage half runs from the LaunchAgent for both the mod and the statusline. Full details: [`statusline/README.md`](statusline/README.md).
 
 ## Architecture
 

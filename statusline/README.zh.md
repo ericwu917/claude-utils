@@ -161,10 +161,10 @@ per-session 设计，并发多个会话各显示各的；hook 还会顺手清掉
 
 - **Session**（`$3.42`，黄色）—— 每次渲染直接读 stdin 的 `cost.total_cost_usd`，< $10 时保留两位小数。
 - **今日 / 本月**（`$54.3 / $3.2K`，淡色）—— 由 [`ccusage`](https://github.com/ryoppippi/ccusage) 扫描 `~/.claude/projects/*/*.jsonl` 按 token 乘以当前模型单价计算，数值与 `ccusage daily` / `ccusage monthly` 一致。如果 `PATH` 或 `~/.bun/bin/` 下都找不到 `ccusage`，这两格降级为 `--`，不影响其他字段。
-- **缓存模型** —— 每次渲染只读 `~/.claude/ccusage-cache.json`（很便宜）。缓存超过 `STATUSLINE_CCUSAGE_TTL`（默认 600s）时，后台启一个子 shell 跑 `ccusage` 刷新缓存后退出（原子 rename 写入），**渲染本身永远不阻塞**。并发刷新用 `~/.claude/ccusage-cache.lock` 目录（`mkdir` 原子性）防雪崩，>60s 的死锁自清理。
+- **缓存模型** —— 每次渲染只读 `~/.claude/ccusage-cache.json`（很便宜）。`install.sh` 装的 LaunchAgent（`com.taige.claude-refresh-caches`）每 30 分钟和登录时跑一次 `statusline-refresh-caches.sh ccusage`，原子 rename 写入缓存 —— **渲染从不跑 `ccusage`**，因为它每次都重读全部 JSONL，历史多时要几分钟。`~/.claude/ccusage-cache.lock` 目录（`mkdir` 原子性）里记着刷新进程的 pid，防止手动跑的和定时的叠在一起；pid 已不在的锁会被清掉。
 - **时区** —— 今日和本月的分桶按 `STATUSLINE_CCUSAGE_TZ`（默认 = `/etc/localtime` 指向的系统时区）。比如上海跨日到 00:00，下次刷新时"今日"会自动归零，不受 JSONL 记录的时间戳影响。
 
-代价：每个 TTL 窗口多跑一次 `ccusage` 子进程。其他全是 `jq` + `awk` 对缓存 JSON 操作，每次渲染开销 < 1ms。
+代价：每 30 分钟以后台优先级跑一次 `ccusage`。其他全是 `jq` + `awk` 对缓存 JSON 操作，每次渲染开销 < 1ms。
 
 ## 安装
 
@@ -201,7 +201,7 @@ cp statusline.sh ~/.claude/statusline-command.sh
 |------|--------|------|
 | `STATUSLINE_WORK_START` | `9` | 工作时段开始（小时，0-23） |
 | `STATUSLINE_WORK_END` | `22` | 工作时段结束（小时，0-23） |
-| `STATUSLINE_CCUSAGE_TTL` | `600` | 今日 / 本月花销后台刷新间隔（秒） |
+| `STATUSLINE_CCUSAGE_TTL` | `600` | 缓存比这个新（秒）时跳过今日 / 本月刷新；刷新周期本身是 LaunchAgent 的 30 分钟 |
 | `STATUSLINE_CCUSAGE_TZ` | 系统时区（读 `/etc/localtime`） | 今日 / 本月分桶使用的 IANA 时区（如 `Asia/Shanghai`），与 `ccusage --timezone` 保持一致 |
 | `STATUSLINE_USAGE_TTL` | `300` | Fable 叠加的后台刷新间隔（秒） |
 

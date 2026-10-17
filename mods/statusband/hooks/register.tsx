@@ -56,7 +56,6 @@ async function readEnvConfig($: EngineInterface) {
   const awayMin = int(await $.env.get('STATUSBAND_AWAY_MIN'))
   if (!Number.isNaN(awayMin)) alerts.awayMs = awayMin * 60_000
 }
-const CCUSAGE_TTL = 600_000
 const USAGE_TTL = 300_000 // between Fable fetch attempts, failures included
 const USAGE_STALE = 3600_000 // Fable data older than this draws grey
 const ACCOUNT_TTL = 600_000 // between asks of which account the credential is
@@ -282,18 +281,14 @@ async function notifyTaskDone($: EngineInterface, ms: number, last: string | und
   await notifyAttention($, `✅ ${message}`)
 }
 
-// Today's and month-to-date cost: the CLI statusline's ccusage cache, refreshed
-// through the shared statusline-refresh-caches.sh (same file, TTL and lock).
-// ccusage scans every local JSONL, so this is the machine's total across accounts.
+// Today's and month-to-date cost: the ccusage cache that launchd refreshes every
+// 30 minutes through statusline-refresh-caches.sh (install.sh sets it up). Only
+// read here: ccusage re-reads every local JSONL, minutes on a large history.
+// That makes it the machine's total across accounts.
 async function refreshCcusage($: EngineInterface) {
   const home = await $.env.get('HOME')
   if (!home) return
   const cache = `${home}/.claude/ccusage-cache.json`
-  const script = `${home}/.claude/statusline-refresh-caches.sh`
-  const isFresh = (await $.fs.exists(cache)) && (await $.clock.now()) - (await $.fs.stat(cache)).mtimeMs <= CCUSAGE_TTL
-  if (!isFresh && (await $.fs.exists(script))) {
-    await $.process.run(['bash', script, 'ccusage'], { timeoutMs: 120_000 })
-  }
   if (!(await $.fs.exists(cache))) return
   try {
     const c = JSON.parse(String(await $.fs.read(cache)))

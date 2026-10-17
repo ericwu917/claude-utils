@@ -11,7 +11,9 @@
 #
 #   hooks       ~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits}.sh
 #   mods        ~/.claude/mods/statusband/  + ~/.claude/statusline-refresh-caches.sh
-#   statusline  ~/.claude/statusline-command.sh (+ refresh script, hooks/last-reply.sh)
+#               + ~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist
+#   statusline  ~/.claude/statusline-command.sh (+ refresh script and its
+#               LaunchAgent, hooks/last-reply.sh)
 #               — retired in favor of the statusband mod; kept as a fallback
 
 set -euo pipefail
@@ -114,6 +116,59 @@ install_copy() {
   log "  $state: $2"
 }
 
+# The ccusage cost cache is refreshed by launchd every 30 minutes, not by the
+# status line or the mod (they only read it): ccusage re-reads every JSONL,
+# minutes on a large history. Written from a template, so it is compared and
+# reported like a copied file; (re)loaded when it changed or isn't loaded.
+LAUNCH_LABEL=com.taige.claude-refresh-caches
+install_launch_agent() {
+  local dst="$HOME/Library/LaunchAgents/$LAUNCH_LABEL.plist" domain tmp state
+  domain="gui/$(id -u)"
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LAUNCH_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$CLAUDE_DIR/statusline-refresh-caches.sh</string>
+        <string>ccusage</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+EOF
+  if [[ -f "$dst" ]] && cmp -s "$tmp" "$dst"; then state=unchanged
+  elif [[ -e "$dst" ]]; then state=updated; else state=new; fi
+  if [[ $DRY_RUN -eq 0 ]]; then
+    if [[ $state != unchanged ]]; then
+      mkdir -p "$(dirname "$dst")"
+      cp "$tmp" "$dst"
+      launchctl bootout "$domain/$LAUNCH_LABEL" 2>/dev/null || true
+    fi
+    if ! launchctl print "$domain/$LAUNCH_LABEL" >/dev/null 2>&1; then
+      launchctl bootstrap "$domain" "$dst" \
+        || warn "  launchctl bootstrap failed; load it with: launchctl bootstrap $domain $dst"
+    fi
+  fi
+  rm -f "$tmp"
+  log "  $state: $dst"
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   warn "claude-utils install: jq is required."
   warn "  Install jq, or follow the manual instructions at:"
@@ -207,8 +262,9 @@ fi
 if [[ $INSTALL_MODS -eq 1 ]]; then
   log "mods → $CLAUDE_DIR/mods/"
   install_copy mods/statusband mods/statusband
-  # statusband refreshes the ccusage cost cache through this script.
+  # statusband reads the ccusage cost cache this script refreshes from launchd.
   install_copy statusline/statusline-refresh-caches.sh statusline-refresh-caches.sh
+  install_launch_agent
   jq --arg dir "$(rt_tilde_path mods/statusband)" '
     .env //= {}
     | .env.CLAUDE_CODE_PLUGIN_DIRS = (
@@ -227,6 +283,7 @@ if [[ $INSTALL_STATUSLINE -eq 1 ]]; then
   log "statusline (legacy) → $CLAUDE_DIR/"
   install_copy statusline/statusline.sh statusline-command.sh
   install_copy statusline/statusline-refresh-caches.sh statusline-refresh-caches.sh
+  install_launch_agent
   install_copy hooks/last-reply.sh hooks/last-reply.sh
   statusline_cmd="bash $(rt_tilde_path statusline-command.sh)"
   existing_statusline="$(jq -r '.statusLine.command // empty' "$TMP")"

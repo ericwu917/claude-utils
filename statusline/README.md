@@ -161,10 +161,10 @@ The line-1 cost field expands from the single session number to `$session / $tod
 
 - **Session** (`$3.42`, yellow) — live from `cost.total_cost_usd` on every render, two-decimal precision for values under $10.
 - **Today** and **month-to-date** (`$54.3 / $3.2K`, dim) — computed by [`ccusage`](https://github.com/ryoppippi/ccusage), which reads the raw transcripts under `~/.claude/projects/*/*.jsonl` and multiplies tokens by current model pricing. Dollar amounts match what `ccusage daily` / `ccusage monthly` would print. If `ccusage` isn't on `PATH` (or under `~/.bun/bin/`), both slots degrade to `--`; the rest of the statusline is unaffected.
-- **Caching model** — each render reads `~/.claude/ccusage-cache.json` (cheap). When the cache is older than `STATUSLINE_CCUSAGE_TTL` (default 600s), a backgrounded subshell forks `ccusage`, updates the cache with atomic rename, and exits — **rendering itself never blocks**. A `~/.claude/ccusage-cache.lock` directory (mkdir is atomic) prevents concurrent refreshers from piling up; a dead-lock >60s old is self-cleared.
+- **Caching model** — each render only reads `~/.claude/ccusage-cache.json` (cheap). A LaunchAgent that `install.sh` sets up (`com.taige.claude-refresh-caches`) runs `statusline-refresh-caches.sh ccusage` every 30 minutes and at login, which updates the cache with atomic rename — **rendering never runs `ccusage`**, since it re-reads every JSONL and takes minutes on a large history. A `~/.claude/ccusage-cache.lock` directory (mkdir is atomic) holding the refresher's pid keeps a manual run from stacking on the scheduled one; a lock whose pid is gone is cleared.
 - **Time zone** — `today` and `month` are bucketed by `STATUSLINE_CCUSAGE_TZ` (default = system TZ from `/etc/localtime`), so at Shanghai midnight, "today" resets to zero on the next refresh regardless of where the underlying JSONL timestamps live.
 
-Cost of the extra feature: one `ccusage` subprocess per TTL window. Everything else is `jq` + `awk` on cached JSON — sub-millisecond per render.
+Cost of the extra feature: one `ccusage` run every 30 minutes, at background priority. Everything else is `jq` + `awk` on cached JSON — sub-millisecond per render.
 
 ## Install
 
@@ -203,7 +203,7 @@ Cost of the extra feature: one `ccusage` subprocess per TTL window. Everything e
 |------|--------|------|
 | `STATUSLINE_WORK_START` | `9` | Working window start (hour, 0–23) |
 | `STATUSLINE_WORK_END` | `22` | Working window end (hour, 0–23) |
-| `STATUSLINE_CCUSAGE_TTL` | `600` | Background-refresh interval for the today/month cost (seconds) |
+| `STATUSLINE_CCUSAGE_TTL` | `600` | A today/month refresh is skipped while the cache is younger than this (seconds); the schedule itself is the LaunchAgent's 30 minutes |
 | `STATUSLINE_CCUSAGE_TZ` | system TZ (from `/etc/localtime`) | IANA zone (e.g. `Asia/Shanghai`) used to bucket today/month, matching what `ccusage --timezone` reports |
 | `STATUSLINE_USAGE_TTL` | `300` | Seconds between background refresh attempts for the Fable overlay |
 

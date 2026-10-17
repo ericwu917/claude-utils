@@ -213,17 +213,14 @@ API_FMT=$(fmt_duration_compact $((API_DURATION_MS / 1000)))
 # Cost
 COST_FMT=$(printf '$%.2f' "$COST")
 
-# Month-to-date cost (ccusage-backed). Cached in ~/.claude/ccusage-cache.json
-# with a TTL, refreshed lazily in the background so rendering stays fast.
-# Session cost above is live from stdin; monthly needs to scan JSONL so we cache.
+# Month-to-date cost (ccusage-backed). Cached in ~/.claude/ccusage-cache.json,
+# which launchd refreshes every 30 minutes (install.sh sets it up): ccusage
+# re-reads every JSONL, minutes on a large history. Rendering only reads it.
 CCUSAGE_CACHE="$HOME/.claude/ccusage-cache.json"
-CCUSAGE_TTL=${STATUSLINE_CCUSAGE_TTL:-600}  # seconds; override with env if desired
 
 TODAY_COST=""
 MONTH_COST=""
-CACHE_AGE=99999
 if [ -f "$CCUSAGE_CACHE" ]; then
-    CACHE_AGE=$(( NOW - $(stat -f %m "$CCUSAGE_CACHE") ))
     TODAY_COST=$(jq -r '.today // ""' "$CCUSAGE_CACHE" 2>/dev/null)
     MONTH_COST=$(jq -r '.month // ""' "$CCUSAGE_CACHE" 2>/dev/null)
 fi
@@ -246,8 +243,8 @@ MONTH_FMT=$(fmt_cost_compact "$MONTH_COST")
 # Fable weekly usage, overlaid on the 7d bar. CC's statusline stdin doesn't
 # carry it (rate_limits projects only five_hour/seven_day/spend_limit, checked
 # through CC 2.1.280), so we read the same endpoint /usage does and cache it
-# the way the ccusage block above does: rendering only reads the cache, and a
-# cache past its TTL forks one background refresher (mkdir lock).
+# rendering only reads the cache, and a cache past its TTL forks one
+# background refresher (mkdir lock).
 USAGE_CACHE="$HOME/.claude/statusline-usage-cache.json"
 USAGE_TTL=${STATUSLINE_USAGE_TTL:-300}  # seconds between refresh attempts
 USAGE_STALE=3600                         # data older than this renders DIM
@@ -261,14 +258,13 @@ if [ -f "$USAGE_CACHE" ]; then
     ' "$USAGE_CACHE" 2>/dev/null)"
 fi
 
-# Either cache stale → refresh in the background and keep rendering with the
-# current (possibly stale) values. The refresher lives in its own script,
-# shared with the desktop statusband mod; it re-checks each TTL (attempted_at
-# for usage, so failures back off) and takes an mkdir lock per cache.
+# Usage cache stale → refresh it in the background and keep rendering with
+# the current (possibly stale) values. The refresher lives in its own script
+# (its ccusage half runs from launchd); it re-checks the TTL against
+# attempted_at, so failures back off, and takes an mkdir lock.
 REFRESH_SCRIPT="${BASH_SOURCE[0]%/*}/statusline-refresh-caches.sh"
-if { [ "$CACHE_AGE" -gt "$CCUSAGE_TTL" ] || [ $(( NOW - USAGE_ATTEMPTED_AT )) -gt "$USAGE_TTL" ]; } \
-    && [ -f "$REFRESH_SCRIPT" ]; then
-    bash "$REFRESH_SCRIPT" </dev/null >/dev/null 2>&1 &
+if [ $(( NOW - USAGE_ATTEMPTED_AT )) -gt "$USAGE_TTL" ] && [ -f "$REFRESH_SCRIPT" ]; then
+    bash "$REFRESH_SCRIPT" usage </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null || true
 fi
 
