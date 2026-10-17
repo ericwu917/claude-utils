@@ -122,13 +122,16 @@ let transcriptPath: string | null = null
 
 async function findTranscript($: EngineInterface) {
   // A session moved into another directory (into a worktree, /cd) has its
-  // transcript moved to that directory's project folder: look again.
-  if (transcriptPath && (await $.fs.exists(transcriptPath))) return transcriptPath
+  // transcript moved to that directory's project folder, and the old file may
+  // stay behind, frozen at the move: the current directory's path comes first.
   const home = await $.env.get('HOME')
   const id = await $.session.id()
+  if (home) {
+    const guess = `${home}/.claude/projects/${(await $.session.root()).replace(/[^A-Za-z0-9]/g, '-')}/${id}.jsonl`
+    if (await $.fs.exists(guess)) return (transcriptPath = guess)
+  }
+  if (transcriptPath && (await $.fs.exists(transcriptPath))) return transcriptPath
   if (!home) return null
-  const guess = `${home}/.claude/projects/${(await $.session.root()).replace(/[^A-Za-z0-9]/g, '-')}/${id}.jsonl`
-  if (await $.fs.exists(guess)) return (transcriptPath = guess)
   const found = await $.process.run(['find', `${home}/.claude/projects`, '-maxdepth', '2', '-name', `${id}.jsonl`], { timeoutMs: 5000 })
   return (transcriptPath = found.stdout.split('\n')[0] || null)
 }

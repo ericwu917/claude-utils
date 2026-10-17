@@ -436,6 +436,34 @@ test('a transcript moved with its session (into a worktree) is found again', asy
   expect(kit.posted).toEqual(['✅ Done in ? [Here] after 11 min: All done', '✅ Done in ? [Moved] after 11 min: All done'])
 })
 
+test('a moved session\'s old transcript left behind is not read again', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const kit = taskKit(on, clock)
+  kit.$ = $
+  on('session.id', () => ({ value: 's' }) as any)
+  let root = '/tmp'
+  on('session.root', () => ({ value: root }) as any)
+  const before = '/home/me/.claude/projects/-tmp/s.jsonl'
+  const after = '/home/me/.claude/projects/-tmp--claude-worktrees-x/s.jsonl'
+  kit.files.add(before)
+  on('process.run', ($, e: any) =>
+    ({
+      value: kit.files.has(e.argv.at(-1))
+        ? { exitCode: 0, stdout: `{"type":"custom-title","customTitle":"${e.argv.at(-1) === after ? 'Moved' : 'Here'}"}`, stderr: '' }
+        : { exitCode: 1, stdout: '', stderr: '' },
+    }) as any,
+  )
+
+  await kit.turn()
+  await kit.stop(11 * 60_000, 0)
+  // The move copies the transcript and the old file stays, frozen at the move.
+  kit.files.add(after)
+  root = '/tmp/.claude/worktrees/x'
+  await kit.turn()
+  await kit.stop(11 * 60_000, 0)
+  expect(kit.posted).toEqual(['✅ Done in ? [Here] after 11 min: All done', '✅ Done in ? [Moved] after 11 min: All done'])
+})
+
 test('an interrupted task is not reported', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const kit = taskKit(on, clock)
