@@ -37,6 +37,8 @@ declare module 'claude-code' {
       // The main thread stopped with background agents (or workflows) still to
       // report; false from its next turn's start.
       awaitingAgents: boolean
+      // The account's plan tier from /api/oauth/profile (`20x`, `5x`); null otherwise.
+      tier: string | null
     }
   }
 }

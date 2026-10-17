@@ -129,6 +129,42 @@ test('5h/7d readings are shared with the account\'s other sessions', async ($, o
   expect(shown.at(-1)).toEqual(five(60))
 })
 
+test('the plan tier comes from the credential\'s profile and follows a re-login', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  let rateLimitTier = 'default_claude_max_20x'
+  on('session.authorize', () => ({ value: { handle: 'h', kind: 'oauth' } }) as any)
+  on('http.fetch', ($, e: any) =>
+    ({
+      value: e.url.endsWith('/api/oauth/profile')
+        ? { ok: true, status: 200, text: JSON.stringify({ account: { uuid: 'acct' }, organization: { rate_limit_tier: rateLimitTier } }) }
+        : { ok: false, status: 503, text: '' },
+    }) as any,
+  )
+  on('store.get', () => ({ value: undefined }) as any)
+  on('store.set', () => ({ value: undefined }) as any)
+  const tiers: unknown[] = []
+  on('state.set', ($, e: any, next) => {
+    if (e.plugin === 'statusband' && e.key === 'tier') tiers.push(e.value)
+    return next(e)
+  })
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: [] } }) as any)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as any)
+  on('session.version', () => ({ value: { version: '2.1.288' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as any)
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  expect(tiers.at(-1)).toBe('20x')
+
+  // A /login to a Pro account: the next ask of the profile drops the tier.
+  rateLimitTier = 'default_claude_pro'
+  await clock.advance(11 * 60_000)
+  expect(tiers.at(-1)).toBeNull()
+})
+
 test('a newer installed version gets one toast of its CHANGELOG, CLI only, once it has a section', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME: '/home/me' })
@@ -304,6 +340,7 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
     model: 'Opus 5.5',
     version: { current: '2.1.286', latest: '2.1.289' },
     context: { tokens: 70000, window: 200000, percent: 35 },
+    tier: '20x',
   }
   // Beneath the plugin, answer its state reads with the session's figures.
   // A state.get hook answers `{ value: StateRead }`, the read itself wrapped.
@@ -315,17 +352,33 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
   expect(await term.findAll({ type: 'Raster' })).toHaveLength(3)
   expect(await term.find({ type: 'Text', text: /fb67%/ })).toBeDefined()
   expect(await term.find({ type: 'Text', text: /↑/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /^20x$/ })).toBeDefined()
   // The directory is a file: link (cmd+click opens it in Finder), as statusline.sh's OSC 8 one.
   expect(await term.find({ type: 'Markdown', text: /\[claude-utils\]\(file:\/\/\/Users\/someone\/claude-utils\)/ })).toBeDefined()
   await term.unmount()
 
-  // A 91-column terminal: line 2 is 93 cells wide in full, so the context
+  // A 91-column terminal: line 2 is 99 cells wide in full, so the context
   // token counts go first and every bar still shows (nothing wraps).
   const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 91 } })
   expect(await narrow.findAll({ type: 'Raster' })).toHaveLength(3)
   expect(await narrow.find({ type: 'Text', text: /70k\/200k/ })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: /3d0h/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /^20x$/ })).toBeDefined()
   await narrow.unmount()
+
+  // 20x and 5x draw in different colors.
+  const tierColor = async (t: string) => {
+    values.tier = t
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const color = (await ui.find({ type: 'Text', text: new RegExp(`^${t}$`) }))?.props.color
+    await ui.unmount()
+    return color
+  }
+  const [c20, c5] = [await tierColor('20x'), await tierColor('5x')]
+  expect(c20).toBeDefined()
+  expect(c5).toBeDefined()
+  expect(c5).not.toBe(c20)
+  values.tier = '20x'
 
   const desk = await $.ui.mount({ ...BAND, surface: 'desktop' })
   // 5 line icons (folder, branch, cache, warm, cost) + the context, 5h and 7d
