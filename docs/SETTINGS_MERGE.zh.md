@@ -15,7 +15,7 @@
 
 ```bash
 mkdir -p ~/.claude/hooks ~/.claude/mods
-cp hooks/worktree-create.sh hooks/worktree-remove.sh hooks/worktree-lib.sh hooks/guard-worktree-edits.sh ~/.claude/hooks/
+cp hooks/worktree-create.sh hooks/worktree-remove.sh hooks/worktree-lib.sh hooks/guard-worktree-edits.sh hooks/guard-rm.sh ~/.claude/hooks/
 cp -R mods/statusband ~/.claude/mods/
 cp statusline/statusline-refresh-caches.sh ~/.claude/
 ```
@@ -46,11 +46,17 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.taige.claude-refresh
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [ { "type": "command", "command": "\"$HOME/.claude/hooks/guard-worktree-edits.sh\"", "timeout": 10 } ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [ { "type": "command", "command": "\"$HOME/.claude/hooks/guard-rm.sh\"", "timeout": 10 } ]
       }
     ]
   }
 }
 ```
+
+`guard-rm.sh` 取代 `Bash(rm -r:*)` / `Bash(rm -rf:*)` 这类 `permissions.ask` 规则：ask 规则不管 hook 返回什么都会弹，所以要把它们删掉，否则 scratchpad 里的递归 rm 照样弹。`install.sh` 只列出、不删。
 
 旧 statusline（`install.sh --statusline`，已被 statusband mod 取代）在把 `statusline/statusline.sh` 拷成 `~/.claude/statusline-command.sh`、`hooks/last-reply.sh` 拷进 `~/.claude/hooks/` 之后，再加：
 

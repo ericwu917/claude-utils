@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 脚本行为要点：
 - 依赖 `jq`；缺了会 exit 2 并指向 `docs/SETTINGS_MERGE.md`
 - 写之前备份到 `~/.claude/settings.json.bak.<timestamp>`；拷贝逐个报 `new` / `updated` / `unchanged`
-- **冲突检测走 basename 匹配**：`hooks.WorktreeCreate[].hooks[].command` 以 `/worktree-create.sh` 结尾的被视为"我们的"，覆盖；其他一律判为冲突，跳过不动，提示用户看 `docs/SETTINGS_MERGE.md`
+- **冲突检测走 basename 匹配**：`hooks.<事件>[].hooks[].command` 以本仓库任一 hook 脚本名（`install.sh` 的 `OUR_HOOKS`）结尾的被视为"我们的"——同一事件下可以有好几个（`PreToolUse` 挂着 `guard-worktree-edits.sh` 和 `guard-rm.sh`），各自按自己的 basename 覆盖；其他一律判为冲突，跳过不动，提示用户看 `docs/SETTINGS_MERGE.md`
 - `env.CLAUDE_CODE_PLUGIN_DIRS` 是 `:` 分隔列表：保留别人的目录，以 `/mods/statusband` 结尾的视为我们的，去重后追加
 - `statusLine.command` 冲突检测靠 substring `statusline-command.sh` 或 `/statusline/statusline.sh`（键是 `statusLine` + `type: command`；旧版脚本写成小写 `statusline`，从来没生效过）
 
@@ -73,6 +73,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 不用 `set -e`、永远 `exit 0`：任何内部出错都 fail-open（放行），绝不卡死用户编辑。
 - 单次 jq 抽字段；worktree 内编辑（常见情况）只付一次 `git rev-parse`，`git worktree list` 只在非约定布局的兜底分支才调。
 - `DEBUG`：`1` 记每次调用（params + 判定，验证用）但**跳过 `in-root`** —— 那是绝大多数真实流量、没有信息量，记了会淹掉日志；`0` 只记 ask。日志在 `~/.claude/worktree-guard.log`（独立于 `worktree-hook.log`）。
+
+## `guard-rm.sh`（PreToolUse 递归 rm 守卫）
+
+挂在 `PreToolUse`（matcher `Bash`）：递归 rm（任何带 r/R 的 flag 或 `--recursive`）一律 `ask`，只有目标全在本 session scratchpad（stdin 的 `scratchpad_dir`，CC ≥ 2.1.257）里面时放行。
+
+- **为什么是 hook 而不是规则**：`permissions.ask` 优先于 allow，PreToolUse hook 返回 `allow` 也盖不过命中的 ask 规则（官方 permissions 文档原文）。所以 `Bash(rm -r:*)` 这类 ask 规则必须删掉，由本 hook 接管；`install.sh` 只提示、不替用户删。
+- **fail closed**（和 `guard-worktree-edits.sh` 相反）：解析不了的（`xargs rm -rf`、`for … do rm -rf $d`、`bash -c "rm -rf …"`、`sudo`、`$(…)`、跟不上的 cd 之后的相对路径、缺 `scratchpad_dir`）都 ask；引号里的 `"rm -rf"`（如 echo）也会 ask，宁可多弹——例外是 `grep`/`rg` 的模式串（子命令里没有 `$(`/反引号时）。只有"整条命令全是 scratchpad 内的 rm（加字面量赋值、cd）"才 `allow`；和别的子命令混在一起时不表态，交给正常流程（auto mode 下即不弹）。
+- **变量**：同一条命令里先 `T=<字面量>` 再 `rm -rf "$T"` 是 Claude 的常见写法，所以会解析。只认无条件（前面是 `;`/换行，不在 `&&`/`||`/`|` 之后）、值不含空白 / `$` / 反引号 / 括号的赋值（值里引用已认出的变量如 `G=$W/sub` 会先展开）；名字在别处再出现（`unset T`、`read T`、`for T`、`export T=`、条件或非字面量重赋值）就作废。
+- **cd**：相对路径的目标按"此刻 shell 可能在的所有目录"逐个解析，全在 scratchpad 里才算。`cd X && … && rm rel` 只可能在 X（cd 失败 rm 就不跑）；`;`、`||`、`|`、`&` 之后 cd 可能没生效，原目录和 X 都要满足。`pushd`/`popd`、`cd -`、`cd ~`、`(cd …`、非字面量参数跟不上，之后的相对路径一律 ask。
+- **heredoc 正文**（`<<'EOF' … EOF`）先剔掉再解析，否则正文里的 `T=/`、"rm -rf" 会被当命令；一行里有多个 heredoc 时不再信任变量。
+- 按 `; && || | &` 和换行切子命令（逐字符扫，引号内和反斜杠转义的不切——`grep -E "a|rm -r|b"` 是一条命令；4KB 命令约 0.1s），再用 `xargs printf` 做不执行的引号感知分词——比 CC 自己的解析器粗，是启发式不是围墙；hook 超时 CC 会走正常流程。`/`、`~` 等关键路径 CC 自己在任何模式都会弹。
+- **不用 `set -u`、要兼容 bash 3.2**：桌面 app 的 PATH 可能没有 homebrew bash，`env bash` 会落到 `/bin/bash` 3.2；3.2 在 `set -u` 下展开空数组会报 unbound 退出，stdout 为空等于放行（fail open）。也不能用关联数组。测试两个版本都要跑：`PATH=/bin:/usr/bin:/opt/homebrew/bin ./hooks/guard-rm.test.sh`。
+- 预过滤在原始 JSON 上只能做子串匹配：JSON 里换行是 `\n` 两个字符，词边界正则会漏掉行首的 `rm`。
+- 日志 `~/.claude/rm-guard.log`：磨合期 `DEBUG=1`，凡含 `rm` 一词的命令都记（ALLOW / ASK / SILENT + 命令全文），用来按真实流量调规则；稳定后改 `0` 只记 ask。
+- 测试：`hooks/guard-rm.test.sh`（stdin fixture，在 `/private/tmp` 下建临时 HOME 和 scratchpad，不写真实日志）。
 
 ## `mods/statusband`（状态横栏 mod）
 

@@ -9,7 +9,7 @@
 # working tree (a checkout on another branch can't break a live session). To
 # upgrade, `git pull` and rerun install.sh.
 #
-#   hooks       ~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits}.sh
+#   hooks       ~/.claude/hooks/{worktree-create,worktree-remove,worktree-lib,guard-worktree-edits,guard-rm}.sh
 #   mods        ~/.claude/mods/statusband/  + ~/.claude/statusline-refresh-caches.sh
 #               + ~/Library/LaunchAgents/com.taige.claude-refresh-caches.plist
 #   statusline  ~/.claude/statusline-command.sh (+ refresh script and its
@@ -197,11 +197,15 @@ cp "$SETTINGS" "$TMP"
 # worktree-remove.sh). Unrelated hooks in the same event slot are preserved
 # and surfaced as a conflict (we do not edit them).
 
+# Every hook script this repo installs; several share PreToolUse, so none of
+# them counts as foreign to the others.
+OUR_HOOKS='(worktree-create|worktree-remove|guard-worktree-edits|guard-rm|last-reply)\.sh"?$'
+
 hook_foreign_commands() {
-  local event="$1" script_basename="$2"
-  jq -r --arg e "$event" --arg s "$script_basename" '
+  local event="$1"
+  jq -r --arg e "$event" --arg ours "/$OUR_HOOKS" '
     .hooks[$e] // [] | map(.hooks // []) | flatten
-    | map(select((.command // "") | test("/" + $s + "$") | not))
+    | map(select((.command // "") | test($ours) | not))
     | map(.command // "") | .[]
   ' "$TMP"
 }
@@ -210,7 +214,7 @@ upsert_hook() {
   local event="$1" script_path="$2" timeout="$3" matcher="${4:-}"
   local script_basename="${script_path##*/}"
   local foreign
-  foreign="$(hook_foreign_commands "$event" "$script_basename" || true)"
+  foreign="$(hook_foreign_commands "$event" || true)"
   if [[ -n "$foreign" ]]; then
     warn "Conflict: $event already has non-claude-utils hooks:"
     printf '%s\n' "$foreign" | sed 's/^/    /' >&2
@@ -240,7 +244,7 @@ hook_cmd() { printf '"%s"' "$(rt_path "hooks/$1")"; }
 
 if [[ $INSTALL_HOOKS -eq 1 ]]; then
   log "hooks → $CLAUDE_DIR/hooks/"
-  for f in worktree-create.sh worktree-remove.sh worktree-lib.sh guard-worktree-edits.sh; do
+  for f in worktree-create.sh worktree-remove.sh worktree-lib.sh guard-worktree-edits.sh guard-rm.sh; do
     install_copy "hooks/$f" "hooks/$f"
   done
   hooks_ok=1
@@ -250,8 +254,19 @@ if [[ $INSTALL_HOOKS -eq 1 ]]; then
   # worktree root (the "in a worktree, editing the parent repo" bleed). Scoped
   # to the file-editing tools via matcher.
   upsert_hook PreToolUse "$(hook_cmd guard-worktree-edits.sh)" 10 "Edit|Write|MultiEdit|NotebookEdit" || hooks_ok=0
+  # PreToolUse guard: ask before recursive rm, except inside the session
+  # scratchpad.
+  upsert_hook PreToolUse "$(hook_cmd guard-rm.sh)" 10 "Bash" || hooks_ok=0
   if [[ $hooks_ok -eq 1 ]]; then
     log "✓ hooks: WorktreeCreate, WorktreeRemove, PreToolUse"
+  fi
+  # An ask rule beats any hook "allow", so these would keep prompting even in
+  # the scratchpad. Removing them is left to the user; just point them out.
+  stale="$(jq -r '.permissions.ask // [] | map(select(test("^Bash\\(rm -rf?[: ]"))) | .[]' "$TMP")"
+  if [[ -n "$stale" ]]; then
+    warn "Note: guard-rm.sh replaces these permissions.ask rules; remove them from $SETTINGS"
+    warn "  or recursive rm in the scratchpad will still prompt:"
+    printf '%s\n' "$stale" | sed 's/^/    /' >&2
   fi
 fi
 

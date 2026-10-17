@@ -93,6 +93,7 @@ claude-utils/
 │   ├── worktree-remove.sh
 │   ├── worktree-lib.sh
 │   ├── guard-worktree-edits.sh
+│   ├── guard-rm.sh             # confirm recursive rm, except in the session scratchpad
 │   └── last-reply.sh           # legacy statusline companion (fallback)
 ├── mods/
 │   └── statusband/             # status band mod (hooks/register.tsx, types/, tests/)

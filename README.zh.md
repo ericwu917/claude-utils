@@ -93,6 +93,7 @@ claude-utils/
 │   ├── worktree-remove.sh
 │   ├── worktree-lib.sh
 │   ├── guard-worktree-edits.sh
+│   ├── guard-rm.sh             # 递归 rm 要确认，session scratchpad 内除外
 │   └── last-reply.sh           # 旧 statusline 配套（备用）
 ├── mods/
 │   └── statusband/             # 状态横栏 mod（hooks/register.tsx、types/、tests/）

@@ -15,7 +15,7 @@ This document tells you what entries to insert — or how to hand this document 
 
 ```bash
 mkdir -p ~/.claude/hooks ~/.claude/mods
-cp hooks/worktree-create.sh hooks/worktree-remove.sh hooks/worktree-lib.sh hooks/guard-worktree-edits.sh ~/.claude/hooks/
+cp hooks/worktree-create.sh hooks/worktree-remove.sh hooks/worktree-lib.sh hooks/guard-worktree-edits.sh hooks/guard-rm.sh ~/.claude/hooks/
 cp -R mods/statusband ~/.claude/mods/
 cp statusline/statusline-refresh-caches.sh ~/.claude/
 ```
@@ -46,11 +46,17 @@ After merging, `~/.claude/settings.json` must contain the fields below (preserve
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [ { "type": "command", "command": "\"$HOME/.claude/hooks/guard-worktree-edits.sh\"", "timeout": 10 } ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [ { "type": "command", "command": "\"$HOME/.claude/hooks/guard-rm.sh\"", "timeout": 10 } ]
       }
     ]
   }
 }
 ```
+
+`guard-rm.sh` replaces `permissions.ask` rules such as `Bash(rm -r:*)` / `Bash(rm -rf:*)`: an ask rule prompts no matter what a hook returns, so remove those rules or recursive rm in the scratchpad keeps prompting. `install.sh` lists them but doesn't remove them.
 
 The legacy statusline (`install.sh --statusline`, replaced by the statusband mod) adds, after copying `statusline/statusline.sh` to `~/.claude/statusline-command.sh` and `hooks/last-reply.sh` to `~/.claude/hooks/`:
 
