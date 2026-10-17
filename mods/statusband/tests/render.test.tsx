@@ -74,6 +74,61 @@ test('a compaction shows its new size at once; a precompute does not', async ($,
   expect(contexts).toEqual([{ tokens: 30000, window: 200000, percent: 15 }])
 })
 
+test('the context fill is measured against the auto-compact window, which follows the model', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  on('session.authorize', () => ({ value: { handle: 'h', kind: 'oauth' } }) as any)
+  on('http.fetch', () => ({ value: { ok: false, status: 503, text: '' } }) as any)
+  on('store.get', () => ({ value: undefined }) as any)
+  on('store.set', () => ({ value: undefined }) as any)
+  const toasts: string[] = []
+  on('ui.toast', ($, e: any) => (toasts.push(e.text), { value: undefined }) as any)
+  const contexts: any[] = []
+  on('state.set', ($, e: any, next) => {
+    if (e.plugin === 'statusband' && e.key === 'context') contexts.push(e.value)
+    return next(e)
+  })
+  // Beneath the plugin: a 1M model window, compacting at each model's
+  // autoCompactWindow (opus 700k, sonnet 500k), which only the breakdown names.
+  let modelId = 'claude-opus-5-5'
+  const compactAt: Record<string, number> = { 'claude-opus-5-5': 700000, 'claude-sonnet-5-5': 500000 }
+  let breakdowns = 0
+  on('session.usage', ($, e: any) => {
+    const context: any = { tokens: 350000, window: 1000000, percent: 35 }
+    if (e?.breakdown) {
+      breakdowns++
+      context.breakdown = { rawMaxTokens: compactAt[modelId], autocompactSource: 'settings' }
+    }
+    return { value: { startedAt: NOW, context, rateLimits: [] } } as any
+  })
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('session.start', () => ({ cwd: '/tmp' }))
+  on('session.model', () => ({ value: modelId }) as any)
+  on('session.version', () => ({ value: { version: '2.1.288' } }) as any)
+  on('session.cwd', () => ({ value: '/tmp' }) as any)
+  on('session.id', () => ({ value: 's' }) as any)
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as any)
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  expect(contexts.at(-1)).toEqual({ tokens: 350000, window: 700000, percent: 50 })
+
+  await $.session.measure({
+    context: { tokens: 420000, window: 1000000, percent: 42 },
+    rateLimits: [],
+    changed: ['context'],
+  } as any)
+  expect(contexts.at(-1)).toEqual({ tokens: 420000, window: 700000, percent: 60 })
+  expect(toasts).toEqual(['Context window at 60% (420k/700k)'])
+
+  // Same model: no new breakdown. A /model switch redraws the stored fill.
+  await clock.advance(60_000)
+  expect(breakdowns).toBe(1)
+  modelId = 'claude-sonnet-5-5'
+  await clock.advance(60_000)
+  expect(breakdowns).toBe(2)
+  expect(contexts.at(-1)).toEqual({ tokens: 420000, window: 500000, percent: 84 })
+})
+
 test('5h/7d readings are shared with the account\'s other sessions', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   // The env names another account (as a `claude` run with the app's identity env

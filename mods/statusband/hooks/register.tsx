@@ -23,6 +23,7 @@ const fable = atom({ plugin: 'statusband', key: 'fable' } as const, null as Fabl
 const model = atom({ plugin: 'statusband', key: 'model' } as const, null as string | null)
 const version = atom({ plugin: 'statusband', key: 'version' } as const, null as Version | null)
 const context = atom({ plugin: 'statusband', key: 'context' } as const, null as Context | null)
+const compactWindow = atom({ plugin: 'statusband', key: 'compactWindow' } as const, null as number | null)
 const ctxWarned = atom({ plugin: 'statusband', key: 'ctxWarned' } as const, false)
 const taskStartedAt = atom({ plugin: 'statusband', key: 'taskStartedAt' } as const, null as number | null)
 const awaitingAgents = atom({ plugin: 'statusband', key: 'awaitingAgents' } as const, false)
@@ -459,6 +460,7 @@ async function latestInstalled($: EngineInterface, home: string) {
 async function refreshModelAndVersion($: EngineInterface) {
   const id = await $.session.model()
   await update($, model, () => displayModel(id))
+  await refreshCompactWindow($, id)
   const current = (await $.session.version()).base ?? (await $.session.version()).version
   const home = await $.env.get('HOME')
   const disk = home ? await latestInstalled($, home) : null
@@ -528,11 +530,32 @@ function changelogSection(md: string, v: string) {
   return lines.slice(start + 1, end < 0 ? undefined : end).join('\n').trim() || null
 }
 
-const toContext = (c: { tokens?: number; window: number; percent?: number }): Context => ({
-  tokens: c.tokens ?? null,
-  window: c.window,
-  percent: c.percent ?? null,
-})
+// The engine measures against the model's window; the band against the
+// auto-compact window (autoCompactWindow) once it is known, as /context does.
+async function toContext($: EngineInterface, c: { tokens?: number; window: number; percent?: number }): Promise<Context> {
+  const window = (await read($, compactWindow)) ?? c.window
+  return {
+    tokens: c.tokens ?? null,
+    window,
+    percent: c.tokens === undefined ? (c.percent ?? null) : Math.round((c.tokens * 100) / window),
+  }
+}
+
+// The auto-compact window, from /context's breakdown (`summary`: local
+// estimates, no token-count API). It moves with the model, so it is asked again
+// when the model changes; a change redraws the stored fill against it.
+let compactWindowModel: string | null = null
+
+async function refreshCompactWindow($: EngineInterface, modelId: string) {
+  if (modelId === compactWindowModel) return
+  const w = (await $.session.usage({ breakdown: 'summary' })).context.breakdown?.rawMaxTokens
+  if (!w) return // no breakdown (no session bound yet): ask again next time
+  compactWindowModel = modelId
+  if (w === (await read($, compactWindow))) return
+  await update($, compactWindow, () => w)
+  const ctx = await read($, context)
+  if (ctx) await setContext($, await toContext($, { tokens: ctx.tokens ?? undefined, window: w }))
+}
 
 // A toast each time the context fill crosses alerts.ctxPct (60%) upward;
 // dropping back under (a /compact, a /clear) re-arms it.
@@ -776,7 +799,7 @@ export const register: Register = on => {
     await update($, ratesAt, () => 0)
     await pullSharedRates($)
     await update($, cost, v => ({ ...v!, session: usage.cost?.usd ?? null }))
-    await setContext($, toContext(usage.context))
+    await setContext($, await toContext($, usage.context))
     await refreshModelAndVersion($)
     await refreshGit($)
     await refreshCacheExpiry($)
@@ -867,7 +890,7 @@ export const register: Register = on => {
       await update($, cost, v => ({ ...v!, session: e.cost?.usd ?? null }))
     }
     if (e.changed.includes('context')) {
-      await setContext($, toContext(e.context))
+      await setContext($, await toContext($, e.context))
     }
     return next(e)
   })

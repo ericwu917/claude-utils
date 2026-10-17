@@ -30,6 +30,9 @@ declare module 'claude-code' {
       model: string | null
       version: Version | null
       context: Context | null
+      // The auto-compact window (autoCompactWindow, /context's denominator):
+      // `context` is measured against it once known.
+      compactWindow: number | null
       // The context-fill toast was raised and the fill has not dropped back since.
       ctxWarned: boolean
       // When the running task's first turn started; null between tasks.
