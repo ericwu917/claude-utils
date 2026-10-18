@@ -444,6 +444,59 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
   await desk.unmount()
 })
 
+test('a click on the directory or branch name copies it on the surface clicked', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const values: Record<string, unknown> = {
+    git: { branch: 'feat/261017-copy', files: 0, add: 0, del: 0 },
+    cwd: '/Users/someone/claude-utils',
+  }
+  on('state.get', ($, e: any, next) =>
+    e.plugin === 'statusband' && e.key in values ? { value: { value: values[e.key], version: 1 } } : next(e),
+  )
+  const copied: string[] = []
+  let refuse = false
+  on('ui.copy', ($, e: any) => {
+    copied.push(`${e.surface}:${e.text}`)
+    return { value: refuse ? { isCopied: false, reason: 'no-clipboard' } : { isCopied: true } } as any
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e: any) => (toasts.push(e.text), { value: undefined }) as any)
+
+  const term = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await term.press({ key: 'dir', link: { href: 'file:///Users/someone/claude-utils' } })
+  await term.press({ key: 'branch' })
+  await term.unmount()
+
+  const desk = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await desk.press({ key: 'copy-dir' })
+  refuse = true
+  await desk.press({ key: 'copy-branch' })
+  await desk.unmount()
+
+  expect(copied).toEqual([
+    'terminal:claude-utils',
+    'terminal:feat/261017-copy',
+    'desktop:claude-utils',
+    'desktop:feat/261017-copy',
+  ])
+  expect(toasts).toEqual([
+    'Copied claude-utils',
+    'Copied feat/261017-copy',
+    'Copied claude-utils',
+    "Couldn't copy feat/261017-copy (no-clipboard)",
+  ])
+
+  // Detached: nothing to copy, so no branch button (the desktop keeps the
+  // directory's copy and open buttons).
+  values.git = { branch: '', files: 0, add: 0, del: 0 }
+  for (const [surface, buttons] of [['terminal', 0], ['desktop', 2]] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ type: 'Text', text: /^\(detached\)$/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Button' })).toHaveLength(buttons)
+    await ui.unmount()
+  }
+})
+
 // Beneath the plugin for the long-task notice: the turn, and a Discord webhook
 // file whose posts are kept.
 function taskKit(on: any, clock: any, env: Record<string, string> = {}) {

@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { Context, Cost, Fable, Git, Rate, SharedRates, Version } from '../types'
 
@@ -118,6 +118,13 @@ async function refreshGit($: EngineInterface) {
     del: num(/(\d+) deletion/),
   }
   await update($, git, () => next)
+}
+
+// A click on the directory or branch name puts it on the clipboard of the
+// surface clicked, with a toast saying whether it took.
+async function copyName($: EngineInterface, text: string, surface: RenderSurface) {
+  const r = await $.ui.copy({ text, surface })
+  $.ui.toast(r.isCopied ? `Copied ${text}` : `Couldn't copy ${text} (${r.reason})`, { timeoutMs: 3000 })
 }
 
 let transcriptPath: string | null = null
@@ -706,7 +713,8 @@ const fmtTokens = (n: number) => (n < 1000 ? `${n}` : `${Math.round(n / 1000)}k`
 type Piece =
   | { text: string; color?: string; dim?: boolean }
   | { raster: string; columns: number; cells: string }
-  | { link: string; href: string; onPress: () => void }
+  | { link: string; href: string; onPress: (surface: RenderSurface) => void }
+  | { button: string; onPress: (surface: RenderSurface) => void }
 type Run = { drop: number; pieces: Piece[] }
 
 // Cells a string takes: emoji (U+1F000 up, and ⏳) are two wide.
@@ -720,7 +728,10 @@ function cellWidth(s: string) {
 }
 
 const runWidth = (r: Run) =>
-  r.pieces.reduce((w, p) => w + ('raster' in p ? p.columns : cellWidth('link' in p ? p.link : p.text)), 0)
+  r.pieces.reduce(
+    (w, p) => w + ('raster' in p ? p.columns : cellWidth('link' in p ? p.link : 'button' in p ? p.button : p.text)),
+    0,
+  )
 
 function fitLine(runs: Run[], columns: number) {
   const kept = [...runs]
@@ -1002,6 +1013,10 @@ export const register: Register = on => {
               {icon('folder')}
               <Box flexDirection="row" alignItems="center">
                 <Text>{dirName}</Text>
+                {/* A Button draws in the native button's smaller font, so the name stays Text and copies from a glyph beside it. */}
+                {dir ? (
+                  <Button key="copy-dir" plain dimColor label="⧉" onPress={p => void copyName($, dirName ?? dir, p.surface)} />
+                ) : null}
                 {dir ? (
                   <Button key="open-dir" plain dimColor label="↗" onPress={() => void $.process.run(['open', dir])} />
                 ) : null}
@@ -1011,7 +1026,12 @@ export const register: Register = on => {
             {g ? (
               <Box flexDirection="row" alignItems="center" columnGap={1}>
                 {icon('branch')}
-                <Text>{g.branch || '(detached)'}</Text>
+                <Box flexDirection="row" alignItems="center">
+                  <Text>{g.branch || '(detached)'}</Text>
+                  {g.branch ? (
+                    <Button key="copy-branch" plain dimColor label="⧉" onPress={p => void copyName($, g.branch, p.surface)} />
+                  ) : null}
+                </Box>
                 {g.files > 0 ? <Text dimColor>{`${g.files} files`}</Text> : null}
                 {g.files > 0 ? <Text color={GREEN}>{`+${g.add}`}</Text> : null}
                 {g.files > 0 ? <Text color={RED}>{`−${g.del}`}</Text> : null}
@@ -1066,7 +1086,7 @@ export const register: Register = on => {
     // detail (today/month cost, diff, expiry, branch; token counts, countdowns),
     // never the bars, the model or the hit rate.
     if (e.surface === 'terminal') {
-      const { Box, Text, Raster, Markdown } = $.ui.resolve(e)
+      const { Box, Text, Raster, Markdown, Button } = $.ui.resolve(e)
       const mdl = await read($, model)
       const ver = await read($, version)
       const tr = await read($, tier)
@@ -1081,15 +1101,23 @@ export const register: Register = on => {
             { text: ']', color: CYAN },
             { text: ' 📁 ' },
             // A file: link, as statusline.sh's OSC 8 one: cmd+click opens it in
-            // Finder through the terminal; a plain click (fullscreen) runs open.
+            // Finder through the terminal; a plain click (fullscreen) copies the name.
             dir
-              ? { link: dirName ?? dir, href: `file://${encodeURI(dir)}`, onPress: () => void $.process.run(['open', dir]) }
+              ? { link: dirName ?? dir, href: `file://${encodeURI(dir)}`, onPress: s => void copyName($, dirName ?? dir, s) }
               : { text: '?' },
           ],
         },
         ...(g
           ? [
-              { drop: 2, pieces: [sep, { text: '🔀 ' }, { text: g.branch || '(detached)', color: GREEN }] },
+              {
+                drop: 2,
+                pieces: [
+                  sep,
+                  { text: '🔀 ' },
+                  // A click (fullscreen) copies it; a Button takes no color, so it loses the green.
+                  g.branch ? { button: g.branch, onPress: s => void copyName($, g.branch, s) } : { text: '(detached)', color: GREEN },
+                ],
+              },
               {
                 drop: 4,
                 pieces: [sep, { text: `${g.files} files ` }, { text: `+${g.add}`, color: GREEN }, { text: ` -${g.del}`, color: RED }],
@@ -1141,7 +1169,13 @@ export const register: Register = on => {
           'raster' in p ? (
             <Raster key={p.raster} columns={p.columns} rows={1} cells={p.cells} />
           ) : 'link' in p ? (
-            <Markdown key="dir" text={`[${p.link.replace(/[[\]\\]/g, '\\$&')}](${p.href})`} onLinkPress={p.onPress} />
+            <Markdown
+              key="dir"
+              text={`[${p.link.replace(/[[\]\\]/g, '\\$&')}](${p.href})`}
+              onLinkPress={(_, press) => p.onPress(press.surface)}
+            />
+          ) : 'button' in p ? (
+            <Button key="branch" plain label={p.button} onPress={press => p.onPress(press.surface)} />
           ) : (
             <Text color={p.color} dimColor={p.dim}>
               {p.text}
