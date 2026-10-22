@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库定位
 
-这是用户 Claude Code 扩展的**源码仓库**，目前包含 `hooks/`（worktree 生命周期钩子）、`mods/statusband/`（输入框上方的状态横栏 mod，CLI 和桌面 app 通用）和 `statusline/`（旧状态栏脚本，已被 mod 取代、留作备用），未来还会有 skills/agents。
+这是用户 Claude Code 扩展的**源码仓库**，目前包含 `hooks/`（worktree 生命周期钩子）、`mods/statusband/`（输入框上方的状态横栏 mod，CLI 和桌面 app 通用）、`statusline/`（旧状态栏脚本，已被 mod 取代、留作备用）和 `plugins/feishu/`（飞书 / Lark channel 插件，经本仓库的 marketplace 安装，不走 `install.sh`，见下文专节），未来还会有 skills/agents。
 
 **运行时是拷贝，不指向工作树**：`install.sh` 把运行时拷到 `~/.claude/`（`hooks/*.sh`、`mods/statusband/`、`statusline-refresh-caches.sh`；旧 statusline 是 `statusline-command.sh`），`settings.json` 引用的是拷贝。这样仓库切分支、改到一半都不会弄坏正在跑的 session。改完代码要重跑 `install.sh` 才进运行时。
 
@@ -127,6 +127,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **测试**（`tests/render.test.tsx`，`claude plugin test mods/statusband`）：测试环境没有 fs/process/clock——必须 `mock.clock(on, …)`，否则 render 钩子被跳过；测试的 `$` 没有 `state`，要用 `on('state.get', …)` 在插件下层喂数据，而且返回值要包一层：`{ value: { value, version } }`。要触发事件（如 `$.session.measure(...)`）时，插件下层得有人应答：测试自己 `on('session.measure', ($, e) => ({ changed: e.changed }))`；toast 用 `on('ui.toast', …)` 截住来断言（2.1.293 起要返回 `{ value: undefined }`，返回 `{}` 会被判失败）。插件调用的 op（如 `$.session.usage()`）在测试下层应答时同样要包 `{ value: … }`；`session.compact` 的 `messages` 至少一条，且每条要带 `toolUses: []`。
 
 **开发流程**：在 session 里加载 `plugin-authoring` skill，把 mod 放进它给的 dev-mods 目录即可热重载；定稿后改仓库这份，再 `install.sh --mods` 进运行时。改完跑 `claude plugin validate` + `claude plugin test`。**在桌面 app 的 session 里跑这些 `claude` 命令时**，先去掉 app 的身份和宿主凭据环境变量：`env -u CLAUDE_CODE_ACCOUNT_UUID -u CLAUDE_CODE_USER_EMAIL -u CLAUDE_CODE_ORGANIZATION_UUID -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_HOST_SESSION_ID -u CLAUDE_CODE_OAUTH_SCOPES -u CLAUDE_CODE_ENTRYPOINT claude plugin test …`，否则会把 `~/.claude.json` 的账号改成 app 的（只有在 CLI 里 `/login` 能改回来）。
+
+## `plugins/feishu`（飞书 / Lark channel 插件）
+
+派生自官方 Discord channel 插件（Apache-2.0，目录里自带 LICENSE，与仓库根的 MIT 并存）。`server.ts` 是 stdio MCP server（Bun），声明 `claude/channel` 与 `claude/channel/permission`；纯逻辑在 `lib.ts`（文件头约定无 I/O），下载与 inbox 读写在 `inbox.ts`。用户文档 `README.md` / `ACCESS.md`，访问控制 skill 在 `skills/access`、`skills/configure`。
+
+**安装与运行时**：经 `.claude-plugin/marketplace.json`（marketplace 名 `claude-utils`）安装：`/plugin marketplace add taige/claude-utils` + `/plugin install feishu@claude-utils`。GitHub 源装进 `~/.claude/plugins/cache/`，按 `plugin.json` 的 `version` 缓存——发布改动要提版本号。**用本地目录作 marketplace 源时，插件直接从源目录运行**（`CLAUDE_PLUGIN_ROOT` 指向源目录，不是 cache 拷贝），开发期重启 session 就加载 worktree 里的新代码，但也意味着切分支会改到正在跑的插件。
+
+以下是实测得来、改代码时要记住的点：
+- **`FEISHU_CHANNEL=1` 才连飞书**：user 级插件会在**每个** session 起 MCP server（装插件时连已经开着的桌面 app session 也会热加载），而飞书每条事件只推给应用的**一条**长连接——非 channel session 的 server 会吞消息。所以 `.mcp.json` 透传 `FEISHU_CHANNEL`，未开启时不查凭据、不连长连接、不建 inbox，`reply` 直接报错。
+- **stdout 只能是 MCP JSON**：`start` 脚本 `bun install … 1>&2`；所有诊断写 stderr。飞书 SDK 给自定义 logger 传的是**一个数组参数**，不经 `formatLogArgs` 展开的话 `instanceof Error` 分支永远不走，app_secret / tenant token 会随请求配置进日志（踩过）；带 `config` / `request` / `headers` 的对象只留 message、状态、飞书 code。
+- **权限转发只在终端真弹确认时发生**：auto 模式不弹，就没有 `permission_request` 可转。channel session 用 manual 模式，并预放行 `mcp__plugin_feishu_feishu__reply`（否则先弹工具确认、再走插件的草稿审批，审批两遍）。
+- **自建 marketplace 的 channel 要 `--dangerously-load-development-channels plugin:feishu@claude-utils`**（启动时全屏确认，`-p` 模式下被忽略）。
+- **`claude --restricted`**：不读 user / project / local settings 文件，但 `--settings` 仍生效（插件经它的 `enabledPlugins` 启用）；不带 `--tools` 时去掉 Bash、WebFetch；文件工具只能碰工作目录和 `--add-dir`——所以下载的图片要 `--add-dir <inbox 真实路径>`（`channels` 可能是软链，插件给的是 realpath），而 `/feishu:access` 在 restricted session 里读不到 `access.json`、会退回 Bash 并弹确认。claude.ai 连接器照样加载，要在 settings 里 deny；`--strict-mcp-config` 会连插件一起去掉。
+- **飞书消息形状**（`tests/real-events.ts` 是脱敏的真实事件）：事件是拍平的 schema 2.0；群里只收 @ 机器人的消息（单独发的图片 / 文件不推，粘贴图片再 @ 会合成一条 post）；客户端加粗的文字到达时是 text 类型；email / URL 被自动转成链接——post 里是 `a` 元素，text 里是内联 Markdown `[x](mailto:x)`，都要还原成原文，否则贴进来的 curl / JSON 被污染、Claude 会误判。卡片按钮回调 `card.action.trigger` 走长连接，dispatcher 的返回值就是回调响应。
+- **测试**：`cd plugins/feishu && bun test`。`server.ts` 一 import 就连飞书，没法直接测，所以能抽的逻辑都放 `lib.ts` / `inbox.ts`。握手纯净度、真实 SDK 路径用一次性脚本 + 本地假飞书验证。
 
 ## 版本与 commit 约定
 

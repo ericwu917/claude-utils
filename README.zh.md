@@ -1,6 +1,6 @@
 # claude-utils
 
-个人 Claude Code 扩展积累：worktree 生命周期 hooks、输入框上方的状态横栏 mod（CLI 和桌面 app 通用）等。
+个人 Claude Code 扩展积累：worktree 生命周期 hooks、输入框上方的状态横栏 mod（CLI 和桌面 app 通用）、飞书 / Lark channel 插件等。
 
 <p align="center">
   <img src="docs/images/statusband-desktop.png" alt="statusband 在桌面 app 里 —— 第一行：目录（带用 Finder 打开的箭头）、git 分支与 diff、prompt 缓存命中率与到期时间、会话 / 今日 / 本月费用；第二行：上下文、5h、7d 进度条，7d 底部一条浅色的 Fable 细条" width="820" />
@@ -8,7 +8,7 @@
 
 > **现状**：给个人用，但每一处"踩坑点"都写成了可复用组件。欢迎拿走、改造、提 issue。
 >
-> **License**：MIT · [English README](README.md)
+> **License**：MIT（`plugins/feishu/` 为 Apache-2.0）· [English README](README.md)
 
 ## 安装（30 秒，在 Claude Code 里贴一段）
 
@@ -76,6 +76,17 @@ CLI 进度条的底轨颜色跟 CC 的主题（`/config` → theme）：`light*`
 
 被上面的 statusband mod 取代；`install.sh --statusline` 仍可安装（连同配套的 `hooks/last-reply.sh` Stop hook，给 `⏱` 段记上次回复时间）。慢数据（ccusage 费用、Fable 用量）的刷新抽在 `statusline/statusline-refresh-caches.sh`，其中 ccusage 部分由 LaunchAgent 定时跑，mod 和 statusline 共用。详见 [`statusline/README.md`](statusline/README.md)。
 
+### plugins/feishu — 飞书 / Lark channel
+
+把飞书（或 Lark 国际版）机器人接进 Claude Code session 的 channel 插件，派生自官方 Discord channel 插件。名单里的人发来的消息转给 Claude，Claude 用 `reply` 工具回复；发往群聊和他人的回复要等审批人在私聊里点头（卡片按钮，或限时的自动发送模式）。发给机器人的图片和文件会下载到本地，Claude 用 Read 查看。它作为插件从本仓库的 marketplace 安装，不经 `install.sh`：
+
+```
+/plugin marketplace add taige/claude-utils
+/plugin install feishu@claude-utils
+```
+
+建应用、开权限、填凭据、启动参数见 [`plugins/feishu/README.md`](plugins/feishu/README.md)，访问控制见 [`plugins/feishu/ACCESS.md`](plugins/feishu/ACCESS.md)。
+
 ## 架构
 
 | 位置 | 角色 |
@@ -85,9 +96,13 @@ CLI 进度条的底轨颜色跟 CC 的主题（`/config` → theme）：`light*`
 | `~/.claude/settings.json` | CC 的配置，由 `install.sh` 幂等合并（hooks、`env.CLAUDE_CODE_PLUGIN_DIRS`） |
 | `~/.claude/ccusage-cache.json` | 今日/本月费用缓存，mod 和旧 statusline 共用 |
 | `~/.claude/worktree-hook.log` | worktree 两个 hook 的 stdin JSON 日志，排查问题用 |
+| `~/.claude/plugins/` | 飞书插件，由 `/plugin install` 从本仓库的 marketplace 装入 |
+| `~/.claude/channels/feishu/` | 飞书插件的状态：凭据（`.env`）、`access.json`、下载的 `inbox/` |
 
 ```
 claude-utils/
+├── .claude-plugin/
+│   └── marketplace.json        # 插件 marketplace（列出 plugins/feishu）
 ├── hooks/
 │   ├── worktree-create.sh
 │   ├── worktree-remove.sh
@@ -97,6 +112,8 @@ claude-utils/
 │   └── last-reply.sh           # 旧 statusline 配套（备用）
 ├── mods/
 │   └── statusband/             # 状态横栏 mod（hooks/register.tsx、types/、tests/）
+├── plugins/
+│   └── feishu/                 # 飞书 / Lark channel 插件（Apache-2.0，自带 LICENSE）
 ├── statusline/
 │   ├── statusline.sh           # 已退役，备用
 │   ├── statusline-refresh-caches.sh
@@ -136,4 +153,4 @@ PR / issue welcome。
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT，见 [LICENSE](LICENSE)。例外：`plugins/feishu/` 派生自 Anthropic 以 Apache-2.0 发布的 Discord channel 插件，仍适用 Apache-2.0，见 [plugins/feishu/LICENSE](plugins/feishu/LICENSE)。

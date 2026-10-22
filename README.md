@@ -1,6 +1,6 @@
 # claude-utils
 
-Personal Claude Code extensions: worktree lifecycle hooks and a status band mod above the prompt (CLI and desktop app alike).
+Personal Claude Code extensions: worktree lifecycle hooks, a status band mod above the prompt (CLI and desktop app alike), and a Feishu / Lark channel plugin.
 
 <p align="center">
   <img src="docs/images/statusband-desktop.png" alt="statusband in the desktop app — line 1: directory with an open-in-Finder arrow, git branch and diff, prompt-cache hit rate and expiry time, session / today / month cost; line 2: context, 5h and 7d bars, the 7d bar with a lighter Fable lane along its bottom" width="820" />
@@ -8,7 +8,7 @@ Personal Claude Code extensions: worktree lifecycle hooks and a status band mod 
 
 > Small-scale personal tooling, but every "gotcha I hit" is packaged as a reusable component. Fork it, tweak it, file issues.
 >
-> **License**: MIT · [中文 README](README.zh.md)
+> **License**: MIT (`plugins/feishu/`: Apache-2.0) · [中文 README](README.zh.md)
 
 ## Install — 30 seconds, paste into Claude Code
 
@@ -76,6 +76,17 @@ After a change, run `claude plugin validate mods/statusband` and `claude plugin 
 
 Replaced by the statusband mod above; `install.sh --statusline` still installs it (with its companion `hooks/last-reply.sh` Stop hook, which timestamps replies for the `⏱` segment). The slow-data refreshers (ccusage cost, Fable usage) live in `statusline/statusline-refresh-caches.sh`; its ccusage half runs from the LaunchAgent for both the mod and the statusline. Full details: [`statusline/README.md`](statusline/README.md).
 
+### plugins/feishu — Feishu / Lark channel
+
+A Claude Code channel plugin that bridges a Feishu (or Lark) bot into a Claude Code session, derived from the official Discord channel plugin. Messages from allowlisted people reach Claude; Claude answers with a `reply` tool, and replies to groups or other people wait for an approver's OK in a direct chat (card buttons, or a timed auto-send mode). Images and files sent to the bot are downloaded for Claude to Read. Installed as a plugin from this repo's marketplace, not by `install.sh`:
+
+```
+/plugin marketplace add taige/claude-utils
+/plugin install feishu@claude-utils
+```
+
+Setup (Feishu app, permissions, credentials, launch flags) is in [`plugins/feishu/README.md`](plugins/feishu/README.md) (Chinese); access control in [`plugins/feishu/ACCESS.md`](plugins/feishu/ACCESS.md).
+
 ## Architecture
 
 | Location | Role |
@@ -85,9 +96,13 @@ Replaced by the statusband mod above; `install.sh --statusline` still installs i
 | `~/.claude/settings.json` | CC's config; `install.sh` merges entries idempotently (hooks, `env.CLAUDE_CODE_PLUGIN_DIRS`) |
 | `~/.claude/ccusage-cache.json` | today/month cost cache, shared by the mod and the legacy statusline |
 | `~/.claude/worktree-hook.log` | stdin JSON of every worktree hook invocation — first stop when debugging |
+| `~/.claude/plugins/` | the Feishu plugin, installed by `/plugin install` from this repo's marketplace |
+| `~/.claude/channels/feishu/` | Feishu plugin state: credentials (`.env`), `access.json`, downloaded `inbox/` |
 
 ```
 claude-utils/
+├── .claude-plugin/
+│   └── marketplace.json        # plugin marketplace (lists plugins/feishu)
 ├── hooks/
 │   ├── worktree-create.sh
 │   ├── worktree-remove.sh
@@ -97,6 +112,8 @@ claude-utils/
 │   └── last-reply.sh           # legacy statusline companion (fallback)
 ├── mods/
 │   └── statusband/             # status band mod (hooks/register.tsx, types/, tests/)
+├── plugins/
+│   └── feishu/                 # Feishu / Lark channel plugin (Apache-2.0, own LICENSE)
 ├── statusline/
 │   ├── statusline.sh           # retired, fallback
 │   ├── statusline-refresh-caches.sh
@@ -136,4 +153,4 @@ PRs and issues welcome.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Exception: `plugins/feishu/` is derived from Anthropic's Apache-2.0 Discord channel plugin and stays under Apache-2.0 — see [plugins/feishu/LICENSE](plugins/feishu/LICENSE).
