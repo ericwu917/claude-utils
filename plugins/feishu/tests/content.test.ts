@@ -75,7 +75,7 @@ describe('parseContent: post', () => {
 
   test('flattens title, text, links, @ and code; marks images; drops the bot @ and unknown tags', () => {
     expect(parseContent('post', JSON.stringify(post), mentions, BOT)).toBe(
-      '联调报错\n接口 500 了，见 日志 (https://example.com/log)\n复现：@李四[图片]\n{"code":500}\n**加粗**',
+      '联调报错\n接口 500 了，见 日志 (https://example.com/log)\n复现：@李四[图片 1]\n{"code":500}\n**加粗**',
     )
   })
 
@@ -123,8 +123,15 @@ describe('parseContent: post', () => {
 })
 
 describe('parseContent: other types', () => {
-  test.each(['image', 'file', 'audio', 'sticker', 'interactive'])('%s → placeholder', t => {
+  test.each(['sticker', 'interactive', 'merge_forward'])('%s → placeholder', t => {
     expect(parseContent(t, '{"image_key":"x"}', [], BOT)).toBe(`(${t} message)`)
+  })
+
+  test('image / file / media / audio have their own placeholders (see inbox.test.ts)', () => {
+    expect(parseContent('image', '{"image_key":"img_x"}', [], BOT)).toBe('[图片 1]')
+    expect(parseContent('file', '{"file_key":"file_x","file_name":"a.log"}', [], BOT)).toBe('[文件 1: a.log]')
+    expect(parseContent('media', '{"file_key":"file_x","image_key":"img_x"}', [], BOT)).toBe('[视频]')
+    expect(parseContent('audio', '{"file_key":"file_x"}', [], BOT)).toBe('[语音]')
   })
 })
 

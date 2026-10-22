@@ -45,6 +45,15 @@
 /feishu:access remove ou_7d8a6e6df7621556ce0d21922b676706
 ```
 
+**备注名（`displayNames`）**：飞书接口返回的名字不一定能用——个人账号改名后接口仍返回旧名，外部人员查不到名字（只能显示 open_id）。可以在终端里给某个 open_id 配一个本地备注名，配了就优先用它、不再向飞书查：Claude 看到的发送人、审批卡片 / 文字里的私聊对象、`seen` 里记下的名字、`/feishu:access` 状态列表都显示它。存在 `access.json` 的 `displayNames`，服务端每次现读，改了不用重启。只能在终端设，飞书里没有改名命令。
+
+```
+/feishu:access name ou_7d8a6e6df7621556ce0d21922b676706 张三（外包前端）
+/feishu:access name ou_7d8a6e6df7621556ce0d21922b676706     # 不带名字 = 删除
+```
+
+显示前和飞书名字一样做清洗：去掉控制字符和换行、双引号换成单引号、最多 40 个字符；清洗后为空就当没配。
+
 ## 审批人
 
 审批人收两类私聊，默认以**带按钮的交互卡片**出现：权限请求卡片有「允许」「拒绝」，回复草稿卡片有「发送」「丢弃」。点了之后卡片变成已处理状态（按钮消失、显示结果），其他审批人那里的同一张卡片也会跟着更新。只有审批人点按钮才有效，别人点会提示"无权限"。按钮需要在开发者后台配好回调（**事件与回调 → 回调配置**：使用长连接接收回调，添加 **卡片回传交互** `card.action.trigger`，改完重新发版）。卡片发不出去时（例如草稿超过卡片大小上限的部分、或接口出错），自动退回下面的文字形式；文字命令任何时候都能用，想丢弃并附理由只能用文字 `no <码> 理由`。
@@ -79,11 +88,11 @@
 
 - 大小写不敏感，整条消息必须就是命令本身；后面再带别的话（如 `auto 8h 谢谢`）就当普通消息转给 Claude。非审批人发、或在群里发，同样只是普通消息。
 - 每条命令的回执是一张「🌙 自动发送」状态卡片，上面有「开启 8 小时」「关闭」按钮（只有审批人点击有效）；卡片发不出去时回文字。
-- 开启期间每条自动发出的回复都会抄送给每个审批人：`📤 自动发送到 群 "<群名>"（<chat_id>）` 加全文（每行以 `┃ ` 开头）；Claude 那边的工具返回值会注明 `(auto-send mode — posted without approval)`。
+- 默认不抄送：自动发出的回复不会再发给审批人。要抄送就 `/feishu:access set autoSendCopy true`，之后每条自动发出的回复都会抄送给每个审批人：`📤 自动发送到 群 "<群名>"（<chat_id>）` 加全文（每行以 `┃ ` 开头）。Claude 那边的工具返回值会注明 `(auto-send mode — posted without approval)`。开关回执卡片、到期通知、工具权限请求照发，不受这个开关影响。
 - 开启前已经在等审批的草稿不受影响，仍要你审批；开启回执里会写还有几条在等。
 - 到期后每个审批人会收到一次 `⏰ 自动发送已结束，之后的回复恢复审批`；手动 `auto off` 只回一句确认，不再发到期通知。
 - 状态存在 `access.json` 的 `autoApproveUntil`（毫秒时间戳，0 或没有 = 关），重启不丢。不是合法数字、或比现在晚 72 小时 5 分钟以上的值一律当作关闭。access.json 读不了的时候 `auto` / `auto <N>h` 开不了，会回"设置失败，access.json 当前不可写"；`auto off` 仍会在当前进程里立即关闭，但会提示"已在本进程关闭，但 access.json 不可写，重启后可能恢复，请修复文件"。
-- 没有任何审批人时自动发送不生效（回复照常报"no approver configured"）。部分发送失败时，已经发出去的部分照样抄送给你，并注明第几段失败、原因。
+- 没有任何审批人时自动发送不生效（回复照常报"no approver configured"）。开了 `autoSendCopy` 时，部分发送失败的回复已经发出去的部分照样抄送给你，并注明第几段失败、原因。
 - 不变的底线：发送人名单、只发往名单内的会话、凭据打码、只认审批人私聊，以及 Claude 的工具权限请求（仍然要审批）都照旧。没有永久开启：终端里长期不要审批请用 `/feishu:access set requireReplyApproval false`。Claude 不能开关这个模式，飞书消息里要求它开关的一律拒绝。
 
 ## 群聊
@@ -126,6 +135,8 @@
 
 **`requireReplyApproval`**：默认 `true`，发往群和审批人以外的人的回复先交审批人，见上文"审批人"。
 
+**`autoSendCopy`**：默认 `false`。为 `true` 时，自动发送（睡眠模式）期间发出的每条回复抄送给审批人，见上文"自动发送（睡眠模式）"。
+
 **`replyToMode`**：带 `reply_to` 的长回复被拆成多块时，`first`（默认）只有第一块引用原消息，`all` 每块都引用，`off` 都不引用。只会引用本进程见过、且确实属于目标会话的消息；否则照常发出但不引用。
 
 **`textChunkLimit`**：拆分阈值，默认 4000 字符，上限 30000。
@@ -146,7 +157,8 @@
 | `/feishu:access policy allowlist` | 设 `dmPolicy`。取值：`pairing`、`allowlist`、`disabled`。 |
 | `/feishu:access group add oc_...` | 开启一个群。参数：`--no-mention`、`--allow id1,id2`。 |
 | `/feishu:access group rm oc_...` | 关闭一个群。 |
-| `/feishu:access set textChunkLimit 2000` | 设置配置项：`mentionPatterns`、`requireReplyApproval`、`replyToMode`、`textChunkLimit`、`chunkMode`。 |
+| `/feishu:access set textChunkLimit 2000` | 设置配置项：`mentionPatterns`、`requireReplyApproval`、`autoSendCopy`、`replyToMode`、`textChunkLimit`、`chunkMode`。 |
+| `/feishu:access name ou_... 张三` | 设 open_id 的本地备注名（名字可含空格，取 open_id 之后的全部文字）；不带名字 = 删除。见上文"用户 ID"。 |
 
 ## 配置文件
 
@@ -188,6 +200,9 @@
   // 自动发送（睡眠模式）到期时间，毫秒时间戳；0 或缺省 = 关。由审批人在飞书私聊里用 auto 命令设置。
   "autoApproveUntil": 0,
 
+  // 自动发送期间是否把发出的回复抄送给审批人；默认 false。
+  "autoSendCopy": false,
+
   // 长回复拆块时的引用：first | all | off
   "replyToMode": "first",
 
@@ -195,6 +210,9 @@
   "textChunkLimit": 4000,
 
   // length = 到阈值硬切。newline = 优先段落边界。
-  "chunkMode": "newline"
+  "chunkMode": "newline",
+
+  // 本地备注名，open_id → 显示名；优先于飞书返回的名字。用 /feishu:access name 设置。
+  "displayNames": { "ou_7d8a6e6df7621556ce0d21922b676706": "张三（外包前端）" }
 }
 ```

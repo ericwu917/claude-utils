@@ -1,13 +1,15 @@
 /**
  * Pure helpers for the Feishu / Lark channel: access gating, mention
- * detection, content parsing, verdict parsing, chunking.
+ * detection, content parsing, attachment naming, verdict parsing, chunking.
  *
  * No I/O and no module-level state here — server.ts owns the Feishu client,
- * the MCP connection and access.json persistence; the tests import only this
- * file (server.ts exits at import time without credentials).
+ * the MCP connection and access.json persistence, inbox.ts the downloads;
+ * the tests import only those two (server.ts exits at import time without
+ * credentials).
  */
 
 import { randomBytes, randomInt } from 'crypto'
+import { dirname, resolve } from 'path'
 
 export type PendingEntry = {
   senderId: string // open_id
@@ -70,6 +72,13 @@ export type Access = {
    * absent = off. Toggled only by an approver from their p2p chat.
    */
   autoApproveUntil?: number
+  /** Copy each auto-sent reply to the approvers. Default: false (only literal true turns it on). */
+  autoSendCopy?: boolean
+  /**
+   * Local display names, keyed on open_id — set from the terminal only
+   * (/feishu:access name). Used instead of Feishu's name when present.
+   */
+  displayNames?: Record<string, string>
 }
 
 export function defaultAccess(): Access {
@@ -100,7 +109,38 @@ export function normalizeAccess(parsed: Partial<Access>): Access {
     textChunkLimit: parsed.textChunkLimit,
     chunkMode: parsed.chunkMode,
     autoApproveUntil: validAutoUntil(parsed.autoApproveUntil),
+    autoSendCopy: parsed.autoSendCopy,
+    displayNames: validDisplayNames(parsed.displayNames),
   }
+}
+
+/** access.json displayNames → only string → string entries of a plain object; anything else is dropped. */
+export function validDisplayNames(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const out: Record<string, string> = {}
+  for (const [k, name] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof name === 'string') out[k] = name
+  }
+  return out
+}
+
+/** The local display name for an open_id (sanitized), or undefined when there is none or it cleans to nothing. */
+export function localDisplayName(access: Pick<Access, 'displayNames'>, openId: string): string | undefined {
+  const names = access.displayNames
+  if (!names || !Object.prototype.hasOwnProperty.call(names, openId)) return undefined
+  return sanitizeName(names[openId])
+}
+
+/**
+ * A user's display name: the local one if set (no Feishu request), else
+ * whatever `lookup` (Feishu, cached) finds; undefined = show the open_id.
+ */
+export async function resolveUserName(
+  access: Pick<Access, 'displayNames'>,
+  openId: string,
+  lookup: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+  return localDisplayName(access, openId) ?? (await lookup())
 }
 
 export const PAIRING_TTL_MS = 60 * 60 * 1000 // 1h
@@ -308,6 +348,7 @@ type PostElement = {
   href?: string
   user_id?: string
   user_name?: string
+  image_key?: string
 }
 
 // Feishu auto-links emails and URLs typed into a message: "a@b.com" arrives as
@@ -321,11 +362,37 @@ export function isAutoLink(text: string, href: string): boolean {
   return norm(text) === norm(href)
 }
 
-function postElementText(
-  el: PostElement,
-  byKey: Map<string, FeishuMention>,
-  botOpenId: string | undefined,
-): string {
+// State for one rendering pass: images are numbered in the order they appear,
+// the same numbering the downloads and the image_N meta keys use.
+type RenderCtx = {
+  byKey: Map<string, FeishuMention>
+  botOpenId: string | undefined
+  resources: InboundResource[]
+  notes: Readonly<Record<string, string>>
+}
+
+function addImage(ctx: RenderCtx, key: unknown): string {
+  const k = resourceKey(key)
+  // No usable key: nothing to download, nothing to number.
+  if (!k) return '[图片]'
+  const n = ctx.resources.filter(r => r.kind === 'image').length + 1
+  ctx.resources.push({ kind: 'image', key: k, n })
+  const note = ctx.notes[`image_${n}`]
+  return note ? `[图片 ${n}: ${note}]` : `[图片 ${n}]`
+}
+
+function addFile(ctx: RenderCtx, key: unknown, rawName: unknown): string {
+  const name = sanitizeFileName(rawName)
+  const k = resourceKey(key)
+  if (!k) return name ? `[文件: ${name}]` : '[文件]'
+  const n = ctx.resources.filter(r => r.kind === 'file').length + 1
+  ctx.resources.push({ kind: 'file', key: k, n, ...(name ? { name } : {}) })
+  const detail = [name, ctx.notes[`file_${n}`]].filter(Boolean).join('，')
+  return detail ? `[文件 ${n}: ${detail}]` : `[文件 ${n}]`
+}
+
+function postElementText(el: PostElement, ctx: RenderCtx): string {
+  const { byKey, botOpenId } = ctx
   switch (el?.tag) {
     case 'text':
     case 'md':
@@ -345,10 +412,10 @@ function postElementText(
       const name = sanitizeName(el.user_name || m?.name || uid)
       return name ? `@${name}` : ''
     }
-    // Not downloaded in this version, but say they were there so Claude can
-    // ask for the details instead of reasoning as if the text were all.
     case 'img':
-      return '[图片]'
+      return addImage(ctx, el.image_key)
+    // Videos aren't downloaded (Claude can't read them), but say they were
+    // there so Claude can ask instead of reasoning as if the text were all.
     case 'media':
       return '[视频]'
     default:
@@ -374,41 +441,253 @@ function findPostBody(obj: unknown): PostBody | undefined {
 
 /**
  * Flatten a message's content to plain text. Never throws — unparseable
- * content becomes "(unparseable <type> message)", non-text types become
- * "(<type> message)".
+ * content becomes "(unparseable <type> message)", types without a readable
+ * form become "(<type> message)".
+ *
+ * Images and files become numbered placeholders — "[图片 N]", "[文件 N: name]"
+ * — numbered like messageResources() and the image_N / file_N meta keys.
+ * `notes` (keyed image_N / file_N) appends why one wasn't downloaded:
+ * "[图片 2: 下载失败]", "[文件 1: x.zip，超过 20MB 未下载]". Placeholders never
+ * carry a path: the content is sender-controlled text.
  */
 export function parseContent(
   messageType: string,
   content: string,
   mentions: FeishuMention[] | undefined,
   botOpenId: string | undefined,
+  notes: Readonly<Record<string, string>> = {},
 ): string {
+  return renderMessage(messageType, content, mentions, botOpenId, notes).text
+}
+
+/**
+ * Inbound content is shown to Claude inside a <channel ...> tag whose
+ * attributes (image_N paths among them) the plugin writes. A sender typing
+ * "</channel><channel ... image_1=...>" must not be able to fake one, so a
+ * zero-width space goes after the "<" of every "<channel" / "</channel"
+ * (any case). Nothing else is touched.
+ */
+export function neutralizeChannelTags(text: string): string {
+  return text.replace(/<(?=\/?channel)/gi, `<${ZWSP}`)
+}
+
+/** Downloadable images / files in a message, in order of appearance (first image is n = 1, etc.). */
+export function messageResources(messageType: string, content: string): InboundResource[] {
+  return renderMessage(messageType, content, [], undefined, {}).resources
+}
+
+// One pass produces both the text and the resource list, so the placeholder
+// numbers and the downloads can't drift apart.
+function renderMessage(
+  messageType: string,
+  content: string,
+  mentions: FeishuMention[] | undefined,
+  botOpenId: string | undefined,
+  notes: Readonly<Record<string, string>>,
+): { text: string; resources: InboundResource[] } {
   const ms = mentions ?? []
+  const ctx: RenderCtx = { byKey: new Map(ms.map(m => [m.key, m])), botOpenId, resources: [], notes }
+  const done = (text: string) => ({ text: neutralizeChannelTags(text), resources: ctx.resources })
   try {
     if (messageType === 'text') {
       const text = (JSON.parse(content) as { text?: unknown }).text
       if (typeof text !== 'string') throw new Error('no text')
-      return replaceMentionKeys(text, ms, botOpenId).trim()
+      return done(replaceMentionKeys(text, ms, botOpenId).trim())
     }
     if (messageType === 'post') {
       const body = findPostBody(JSON.parse(content))
       if (!body) throw new Error('no post body')
-      const byKey = new Map(ms.map(m => [m.key, m]))
       const lines: string[] = []
       if (typeof body.title === 'string' && body.title) lines.push(body.title)
       for (const para of body.content) {
         if (!Array.isArray(para)) continue
-        const line = para.map(el => postElementText(el, byKey, botOpenId)).join('')
+        const line = para.map(el => postElementText(el, ctx)).join('')
         // "@bot rest" — drop the space the removed @bot leaves behind.
-        const leadingBotAt = para[0]?.tag === 'at' && postElementText(para[0], byKey, botOpenId) === ''
+        const leadingBotAt = para[0]?.tag === 'at' && postElementText(para[0], ctx) === ''
         lines.push(leadingBotAt ? line.trimStart() : line)
       }
-      return replaceMentionKeys(lines.join('\n'), ms, botOpenId).trim()
+      return done(replaceMentionKeys(lines.join('\n'), ms, botOpenId).trim())
+    }
+    if (messageType === 'image') {
+      const c = JSON.parse(content) as { image_key?: unknown }
+      return done(addImage(ctx, c?.image_key))
+    }
+    if (messageType === 'file') {
+      const c = JSON.parse(content) as { file_key?: unknown; file_name?: unknown }
+      return done(addFile(ctx, c?.file_key, c?.file_name))
     }
   } catch {
-    return `(unparseable ${messageType} message)`
+    ctx.resources.length = 0
+    return done(`(unparseable ${messageType} message)`)
   }
-  return `(${messageType} message)`
+  // Not downloaded: Claude can't read video or audio.
+  if (messageType === 'media') return done('[视频]')
+  if (messageType === 'audio') return done('[语音]')
+  return done(`(${messageType} message)`)
+}
+
+// ---------------------------------------------------------------------------
+// Inbound images and files: naming, limits, outcome notes. The download
+// itself (streams, files) lives in inbox.ts.
+
+export type ResourceKind = 'image' | 'file'
+
+/** A downloadable resource; `n` numbers it within its kind, matching [图片 N] / [文件 N] and image_N / file_N. */
+export type InboundResource = { kind: ResourceKind; key: string; n: number; name?: string }
+
+export const IMAGE_MAX_BYTES = 10 * 1024 * 1024
+export const FILE_MAX_BYTES = 20 * 1024 * 1024
+export const MAX_RESOURCES_PER_MESSAGE = 9
+export const RESOURCE_TIMEOUT_MS = 30_000
+export const INBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+// Keys go into the request path unencoded (the SDK fills ":file_key" as is),
+// so only the characters Feishu keys are made of pass.
+const RESOURCE_KEY_RE = /^[A-Za-z0-9_-]{1,256}$/
+
+function resourceKey(v: unknown): string | undefined {
+  return typeof v === 'string' && RESOURCE_KEY_RE.test(v) ? v : undefined
+}
+
+/** The meta key for a resource: image_N / file_N. */
+export function resourceMetaKey(r: Pick<InboundResource, 'kind' | 'n'>): string {
+  return `${r.kind}_${r.n}`
+}
+
+export type ResourceFailure = 'failed' | 'too-large' | 'over-count'
+
+function formatBytes(n: number): string {
+  const mb = 1024 * 1024
+  if (n >= mb) return `${Math.round((n / mb) * 10) / 10}MB`
+  if (n >= 1024) return `${Math.round((n / 1024) * 10) / 10}KB`
+  return `${n}B`
+}
+
+/**
+ * Why a resource wasn't downloaded, as appended to its placeholder. `limits`
+ * are the caps actually in force (default: the production ones).
+ */
+export function resourceNote(
+  kind: ResourceKind,
+  why: ResourceFailure,
+  limits: { maxBytes?: number; maxCount?: number } = {},
+): string {
+  if (why === 'too-large') {
+    return `超过 ${formatBytes(limits.maxBytes ?? (kind === 'image' ? IMAGE_MAX_BYTES : FILE_MAX_BYTES))} 未下载`
+  }
+  if (why === 'over-count') return `超过 ${limits.maxCount ?? MAX_RESOURCES_PER_MESSAGE} 个未下载`
+  return '下载失败'
+}
+
+export const FILE_NAME_MAX_CHARS = 80
+/** Cap on a whole inbox file name in UTF-8 bytes (most file systems allow 255). */
+export const INBOX_NAME_MAX_BYTES = 200
+// A trailing ".xxx" of at most this many characters counts as an extension
+// and survives truncation.
+const EXT_MAX_CHARS = 16
+
+/**
+ * Shorten `name` to at most `maxChars` characters and `maxBytes` UTF-8 bytes,
+ * cutting from the end of the stem so a short extension stays (".log",
+ * ".png"); a name without one (or with a longer one) is cut from the end.
+ */
+export function truncateFileName(name: string, maxChars: number, maxBytes: number): string {
+  const fits = (s: string) => [...s].length <= maxChars && Buffer.byteLength(s, 'utf8') <= maxBytes
+  if (fits(name)) return name
+  const dot = name.lastIndexOf('.')
+  let ext = dot > 0 && [...name.slice(dot + 1)].length <= EXT_MAX_CHARS ? name.slice(dot) : ''
+  if (ext && !fits(`x${ext}`)) ext = ''
+  const stem = [...name.slice(0, name.length - ext.length)].slice(0, maxChars)
+  while (stem.length > 0 && !fits(stem.join('') + ext)) stem.pop()
+  return stem.length > 0 ? stem.join('') + ext : ''
+}
+
+const FILE_NAME_CHAR_RE = /^[A-Za-z0-9._\-\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u
+
+/**
+ * A sender-chosen file name, made safe for a path and a placeholder: only
+ * ASCII letters / digits, ".", "-", "_" and CJK characters are kept (anything
+ * else → "_"), leading dots are dropped, 80 characters max (a short
+ * extension is kept when cutting). "" when nothing is left.
+ */
+export function sanitizeFileName(name: unknown): string {
+  if (typeof name !== 'string') return ''
+  const kept = [...name].map(c => (FILE_NAME_CHAR_RE.test(c) ? c : '_')).join('')
+  return truncateFileName(kept.replace(/^\.+/, ''), FILE_NAME_MAX_CHARS, Infinity)
+}
+
+/**
+ * Inbox file name: <YYYYMMDD-HHMMSS>-<last 8 of message_id>-<n>.<ext> for an
+ * image, <YYYYMMDD-HHMMSS>-<last 8 of message_id>-<n>-<clean name> for a file
+ * (".bin" instead when it has no usable name). Local time. The whole name is
+ * at most 200 UTF-8 bytes: a long file name is cut, keeping its extension.
+ */
+export function inboxFileName(o: { at: Date; messageId: string; kind: ResourceKind; n: number; ext?: string; name?: string }): string {
+  const d = o.at
+  const ts =
+    `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-` +
+    `${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`
+  const stem = `${ts}-${o.messageId.replace(/[^A-Za-z0-9_-]/g, '_').slice(-8)}-${o.n}`
+  if (o.kind === 'file') {
+    const budget = INBOX_NAME_MAX_BYTES - Buffer.byteLength(`${stem}-`, 'utf8')
+    const name = truncateFileName(sanitizeFileName(o.name), FILE_NAME_MAX_CHARS, budget)
+    return name ? `${stem}-${name}` : `${stem}.bin`
+  }
+  return `${stem}.${o.ext ?? 'bin'}`
+}
+
+/** True only when `path` resolves to an entry directly inside `inbox` (not the inbox itself, not deeper, not outside). */
+export function isInboxChild(inbox: string, path: string): boolean {
+  const dir = resolve(inbox)
+  const p = resolve(path)
+  return p !== dir && dirname(p) === dir
+}
+
+export type ImageExt = 'png' | 'jpg' | 'gif' | 'webp' | 'bin'
+
+const IMAGE_TYPES: Record<string, ImageExt> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+}
+
+/** Image extension from the Content-Type, else the file's magic bytes, else "bin". */
+export function imageExt(contentType: string | undefined, head: Uint8Array): ImageExt {
+  const ct = (contentType ?? '').split(';')[0]!.trim().toLowerCase()
+  const byType = IMAGE_TYPES[ct]
+  if (byType) return byType
+  const starts = (sig: number[], at = 0) => sig.every((b, i) => head[at + i] === b)
+  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'png'
+  if (starts([0xff, 0xd8, 0xff])) return 'jpg'
+  if (starts([0x47, 0x49, 0x46, 0x38])) return 'gif' // GIF8
+  if (starts([0x52, 0x49, 0x46, 0x46]) && starts([0x57, 0x45, 0x42, 0x50], 8)) return 'webp' // RIFF....WEBP
+  return 'bin'
+}
+
+/**
+ * One safe line for a failed resource request. The SDK requests resources
+ * as a stream, so an HTTP error's body arrives as raw text (read by the
+ * caller, bounded) instead of parsed JSON: pull Feishu's code / msg out of
+ * it, else fall back to the error message and HTTP status. Redacted.
+ */
+export function resourceErrorText(
+  e: { status?: number; body?: unknown; message?: string },
+  secrets: Secrets,
+): string {
+  let body = e.body
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body)
+    } catch {}
+  }
+  const b = body && typeof body === 'object' ? (body as { code?: unknown; msg?: unknown }) : undefined
+  const line =
+    b && (typeof b.code === 'number' || typeof b.code === 'string')
+      ? `feishu api error ${String(b.code)}: ${typeof b.msg === 'string' ? b.msg : ''}`
+      : `${e.message || 'request failed'}${e.status ? ` (HTTP ${e.status})` : ''}`
+  return redact(line, secrets)
 }
 
 // Permission-reply spec from anthropics/claude-cli-internal
@@ -486,6 +765,15 @@ export function newApprovalCode(taken: (code: string) => boolean): string {
   }
 }
 
+/** `p`'s value, or `fallback` if `ms` pass first. (`p` keeps running; its late result is ignored.) */
+export function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<T>(res => {
+    timer = setTimeout(() => res(fallback), ms)
+  })
+  return Promise.race([p, late]).finally(() => clearTimeout(timer))
+}
+
 /** Insert into an insertion-ordered set, dropping the oldest past `cap`. */
 export function noteBounded<T>(set: Set<T>, value: T, cap: number): void {
   set.add(value)
@@ -537,24 +825,41 @@ function safeJson(v: unknown): string {
   }
 }
 
-// axios errors (and anything shaped like one) carry the full request config —
-// headers with the tenant token, bodies with the app secret or a reply draft.
+// axios errors, requests and responses (and anything shaped like them) carry
+// the request config or headers — the tenant token, bodies with the app
+// secret or a reply draft. A stream response's IncomingMessage holds the sent
+// request (`req`, with its Authorization header) and has `headers`.
 function isRequestErrorLike(v: object): boolean {
-  return 'config' in v || 'isAxiosError' in v || 'response' in v
+  return 'config' in v || 'request' in v || 'headers' in v || 'isAxiosError' in v || 'response' in v
+}
+
+/** Request-shaped objects → message, HTTP status, Feishu code / msg. Nothing else of them is printed. */
+function formatRequestLike(v: object): string {
+  const o = v as {
+    message?: unknown
+    status?: unknown
+    statusCode?: unknown
+    data?: unknown
+    response?: { status?: unknown; data?: unknown }
+  }
+  const status = [o.response?.status, o.status, o.statusCode].find(s => typeof s === 'number')
+  const data = (o.response && typeof o.response === 'object' ? o.response.data : o.data) as
+    | { code?: unknown; msg?: unknown }
+    | undefined
+  const feishu =
+    data && typeof data === 'object' && (data.code !== undefined || data.msg !== undefined)
+      ? ` (feishu code ${String(data.code)}: ${String(data.msg ?? '')})`
+      : ''
+  const message = typeof o.message === 'string' ? o.message : 'request failed'
+  // Axios messages already say "status code N"; don't repeat it.
+  const http = status !== undefined && !message.includes(String(status)) ? ` (HTTP ${status})` : ''
+  return `${message}${http}${feishu}`
 }
 
 function formatOne(v: unknown): string {
   if (typeof v === 'string') return v
   if (v && typeof v === 'object') {
-    if (isRequestErrorLike(v)) {
-      const o = v as { message?: unknown; response?: { data?: unknown } }
-      const data = o.response?.data as { code?: unknown; msg?: unknown } | undefined
-      const feishu =
-        data && typeof data === 'object' && (data.code !== undefined || data.msg !== undefined)
-          ? ` (feishu code ${String(data.code)}: ${String(data.msg ?? '')})`
-          : ''
-      return `${typeof o.message === 'string' ? o.message : 'request failed'}${feishu}`
-    }
+    if (isRequestErrorLike(v)) return formatRequestLike(v)
     if (v instanceof Error) return v.message
   }
   return safeJson(v)
@@ -1035,7 +1340,7 @@ export function isAutoActive(access: Pick<Access, 'autoApproveUntil'>, now: numb
 /**
  * How the reply tool treats a send:
  * - 'direct': no approval wanted (requireReplyApproval false, or an approver's own p2p chat)
- * - 'auto': approval would be needed, but auto-send mode is on — post and copy the approvers
+ * - 'auto': approval would be needed, but auto-send mode is on — post (copied to the approvers only with autoSendCopy)
  * - 'approval': hold for an approver
  */
 export function replyApprovalMode(
@@ -1074,8 +1379,17 @@ export function describeAuto(until: number | undefined, now: number): string {
   return `开启，到 ${at}（剩余 ${left}）`
 }
 
-/** The auto-send control card: status, an optional note, 开启 8 小时 / 关闭 buttons. */
-export function buildAutoCard(opts: { until: number | undefined; now: number; note?: string }): Record<string, unknown> {
+/** Whether auto-sent replies are copied to the approvers (autoSendCopy, off unless literally true). */
+export function autoSendCopyOn(access: Pick<Access, 'autoSendCopy'>): boolean {
+  return access.autoSendCopy === true
+}
+
+/**
+ * The auto-send control card: status, an optional note, 开启 8 小时 / 关闭
+ * buttons. `copy` = autoSendCopyOn, for the line saying whether replies are
+ * copied.
+ */
+export function buildAutoCard(opts: { until: number | undefined; now: number; note?: string; copy?: boolean }): Record<string, unknown> {
   const on = isAutoActive({ autoApproveUntil: opts.until }, opts.now)
   const elements: Record<string, unknown>[] = [plainDiv(`状态：${describeAuto(opts.until, opts.now)}`)]
   if (opts.note) elements.push(plainDiv(opts.note))
@@ -1090,7 +1404,9 @@ export function buildAutoCard(opts: { until: number | undefined; now: number; no
   })
   elements.push(
     plainDiv(
-      `开启期间，发往群和他人的回复不经审批直接发出，每条都会抄送给你；Claude 的工具权限请求仍需审批。也可回复 auto / auto <N>h / auto off / auto status`,
+      `开启期间，发往群和他人的回复不经审批直接发出，` +
+        (opts.copy ? '每条都会抄送给你' : '不抄送给你（终端里 /feishu:access set autoSendCopy true 可开启抄送）') +
+        `；Claude 的工具权限请求仍需审批。也可回复 auto / auto <N>h / auto off / auto status`,
       { text_color: 'grey', text_size: 'notation' },
     ),
   )
