@@ -349,6 +349,8 @@ type PostElement = {
   user_id?: string
   user_name?: string
   image_key?: string
+  language?: string
+  style?: unknown
 }
 
 // Feishu auto-links emails and URLs typed into a message: "a@b.com" arrives as
@@ -372,18 +374,21 @@ export function unwrapAutoLinks(text: string): string {
 }
 
 // State for one rendering pass: images are numbered in the order they appear,
-// the same numbering the downloads and the image_N meta keys use.
+// the same numbering the downloads and the image_N meta keys use. A quoted
+// message (`quote`) gets unnumbered placeholders and no resources: its images
+// are never downloaded and must not be confused with this message's.
 type RenderCtx = {
   byKey: Map<string, FeishuMention>
   botOpenId: string | undefined
   resources: InboundResource[]
   notes: Readonly<Record<string, string>>
+  quote?: boolean
 }
 
 function addImage(ctx: RenderCtx, key: unknown): string {
   const k = resourceKey(key)
   // No usable key: nothing to download, nothing to number.
-  if (!k) return '[图片]'
+  if (!k || ctx.quote) return '[图片]'
   const n = ctx.resources.filter(r => r.kind === 'image').length + 1
   ctx.resources.push({ kind: 'image', key: k, n })
   const note = ctx.notes[`image_${n}`]
@@ -393,25 +398,64 @@ function addImage(ctx: RenderCtx, key: unknown): string {
 function addFile(ctx: RenderCtx, key: unknown, rawName: unknown): string {
   const name = sanitizeFileName(rawName)
   const k = resourceKey(key)
-  if (!k) return name ? `[文件: ${name}]` : '[文件]'
+  if (!k || ctx.quote) return name ? `[文件: ${name}]` : '[文件]'
   const n = ctx.resources.filter(r => r.kind === 'file').length + 1
   ctx.resources.push({ kind: 'file', key: k, n, ...(name ? { name } : {}) })
   const detail = [name, ctx.notes[`file_${n}`]].filter(Boolean).join('，')
   return detail ? `[文件 ${n}: ${detail}]` : `[文件 ${n}]`
 }
 
+// Struck-through text usually marks something no longer valid (an old URL, a
+// dropped parameter) — keep that visible as ~~…~~. Other styles are dropped.
+function struck(el: PostElement, s: string): string {
+  return s && Array.isArray(el.style) && el.style.includes('lineThrough') ? `~~${s}~~` : s
+}
+
+const CODE_LANG_RE = /^[A-Za-z0-9_+#.-]{1,32}$/
+
+// A code block as its own fenced block: ```<language, lower case>, the code
+// without trailing newlines, ```.
+function codeBlockText(el: PostElement): string {
+  const lang = typeof el.language === 'string' && CODE_LANG_RE.test(el.language) ? el.language.toLowerCase() : ''
+  const code = typeof el.text === 'string' ? el.text.replace(/[\r\n]+$/, '') : ''
+  return '```' + lang + '\n' + code + '\n```'
+}
+
+// One post paragraph. A code block goes on lines of its own: a newline
+// before it unless it starts the paragraph, and after it unless it ends it.
+function paragraphText(para: PostElement[], ctx: RenderCtx): string {
+  let out = ''
+  let afterBlock = false
+  for (const el of para) {
+    if (el?.tag === 'code_block') {
+      if (out && !out.endsWith('\n')) out += '\n'
+      out += codeBlockText(el)
+      afterBlock = true
+      continue
+    }
+    const s = postElementText(el, ctx)
+    if (!s) continue
+    if (afterBlock && !s.startsWith('\n')) out += '\n'
+    afterBlock = false
+    out += s
+  }
+  return out
+}
+
 function postElementText(el: PostElement, ctx: RenderCtx): string {
   const { byKey, botOpenId } = ctx
   switch (el?.tag) {
     case 'text':
+      return struck(el, typeof el.text === 'string' ? el.text : '')
     case 'md':
-    case 'code_block':
       return typeof el.text === 'string' ? el.text : ''
+    case 'code_block':
+      return codeBlockText(el)
     case 'a': {
       const text = el.text ?? ''
       const href = el.href ?? ''
-      if (text && href && !isAutoLink(text, href)) return `${text} (${href})`
-      return text || href
+      if (text && href && !isAutoLink(text, href)) return `${struck(el, text)} (${href})`
+      return struck(el, text || href)
     }
     case 'at': {
       const uid = el.user_id ?? ''
@@ -493,9 +537,10 @@ function renderMessage(
   mentions: FeishuMention[] | undefined,
   botOpenId: string | undefined,
   notes: Readonly<Record<string, string>>,
+  quote = false,
 ): { text: string; resources: InboundResource[] } {
   const ms = mentions ?? []
-  const ctx: RenderCtx = { byKey: new Map(ms.map(m => [m.key, m])), botOpenId, resources: [], notes }
+  const ctx: RenderCtx = { byKey: new Map(ms.map(m => [m.key, m])), botOpenId, resources: [], notes, quote }
   const done = (text: string) => ({ text: neutralizeChannelTags(text), resources: ctx.resources })
   try {
     if (messageType === 'text') {
@@ -510,7 +555,7 @@ function renderMessage(
       if (typeof body.title === 'string' && body.title) lines.push(body.title)
       for (const para of body.content) {
         if (!Array.isArray(para)) continue
-        const line = para.map(el => postElementText(el, ctx)).join('')
+        const line = paragraphText(para, ctx)
         // "@bot rest" — drop the space the removed @bot leaves behind.
         const leadingBotAt = para[0]?.tag === 'at' && postElementText(para[0], ctx) === ''
         lines.push(leadingBotAt ? line.trimStart() : line)
@@ -533,6 +578,84 @@ function renderMessage(
   if (messageType === 'media') return done('[视频]')
   if (messageType === 'audio') return done('[语音]')
   return done(`(${messageType} message)`)
+}
+
+// ---------------------------------------------------------------------------
+// Quoted (replied-to) messages. The receive event only carries parent_id;
+// server.ts fetches the parent with im.v1.message.get and renders it here.
+
+/** A fetched parent message, in parseContent's terms. */
+export type QuotedMessage = {
+  messageType: string
+  content: string
+  mentions: FeishuMention[]
+  senderId?: string
+  /** Sent by a bot / app (this one included). */
+  fromBot: boolean
+}
+
+/**
+ * im.v1.message.get's data.items[0] → QuotedMessage. Its shape differs from
+ * the receive event: msg_type, body.content, sender.id / sender_type, and
+ * mentions[].id is a plain string. undefined when it's missing, malformed or
+ * recalled (deleted).
+ */
+export function quotedMessageFromApi(item: unknown): QuotedMessage | undefined {
+  if (!item || typeof item !== 'object') return undefined
+  const it = item as {
+    msg_type?: unknown
+    deleted?: unknown
+    body?: { content?: unknown }
+    sender?: { id?: unknown; id_type?: unknown; sender_type?: unknown }
+    mentions?: unknown
+  }
+  if (it.deleted === true) return undefined
+  if (typeof it.msg_type !== 'string' || typeof it.body?.content !== 'string') return undefined
+  const mentions: FeishuMention[] = []
+  for (const m of Array.isArray(it.mentions) ? it.mentions : []) {
+    const x = m as { key?: unknown; id?: unknown; id_type?: unknown; name?: unknown }
+    if (typeof x?.key !== 'string') continue
+    mentions.push({
+      key: x.key,
+      id: typeof x.id === 'string' && x.id_type === 'open_id' ? { open_id: x.id } : {},
+      name: typeof x.name === 'string' ? x.name : '',
+    })
+  }
+  const s = it.sender
+  return {
+    messageType: it.msg_type,
+    content: it.body.content,
+    mentions,
+    ...(typeof s?.id === 'string' && s.id_type === 'open_id' ? { senderId: s.id } : {}),
+    fromBot: s?.sender_type === 'app',
+  }
+}
+
+/** A quoted message's text: like parseContent, but images / files are unnumbered and never downloaded. */
+export function parseQuotedContent(q: QuotedMessage, botOpenId: string | undefined): string {
+  return renderMessage(q.messageType, q.content, q.mentions, botOpenId, {}, true).text
+}
+
+export const QUOTE_MAX_CHARS = 2000
+export const QUOTE_UNAVAILABLE = '> （引用的消息取不到）'
+
+/**
+ * The quote block put before a reply's own text: "> 引用 <sender>：" and the
+ * quoted text, every line prefixed "> " (cut at 2000 characters). null =
+ * the parent couldn't be fetched — say so, so Claude knows something is
+ * quoted that it can't see.
+ */
+export function buildQuoteBlock(q: { sender: string; text: string } | null): string {
+  if (!q) return QUOTE_UNAVAILABLE
+  const chars = [...q.text]
+  const text = chars.length > QUOTE_MAX_CHARS ? `${chars.slice(0, QUOTE_MAX_CHARS).join('')}…（引用已截断）` : q.text
+  const lines = text ? text.split('\n').map(l => (l ? `> ${l}` : '>')) : []
+  return neutralizeChannelTags([`> 引用 ${q.sender}：`, ...lines].join('\n'))
+}
+
+/** The reply's content with its quote block in front. */
+export function withQuote(quoteBlock: string, body: string): string {
+  return `${quoteBlock}\n\n${body}`
 }
 
 // ---------------------------------------------------------------------------

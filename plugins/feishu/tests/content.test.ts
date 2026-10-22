@@ -75,7 +75,7 @@ describe('parseContent: post', () => {
 
   test('flattens title, text, links, @ and code; marks images; drops the bot @ and unknown tags', () => {
     expect(parseContent('post', JSON.stringify(post), mentions, BOT)).toBe(
-      '联调报错\n接口 500 了，见 日志 (https://example.com/log)\n复现：@李四[图片 1]\n{"code":500}\n**加粗**',
+      '联调报错\n接口 500 了，见 日志 (https://example.com/log)\n复现：@李四[图片 1]\n```json\n{"code":500}\n```\n**加粗**',
     )
   })
 
