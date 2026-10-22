@@ -356,6 +356,33 @@ test('a window past its reset with no newer reading draws as started over', asyn
   await term3.unmount()
 })
 
+test('a rate bar is colored by its usage projected to the window\'s end', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const values: Record<string, unknown> = {}
+  on('state.get', ($, e: any, next) =>
+    e.plugin === 'statusband' && e.key in values ? { value: { value: values[e.key], version: 1 } } : next(e),
+  )
+  const color = async (usage: number, minutesLeft: number) => {
+    values.rates = [{ kind: 'five_hour', percentUsed: usage, resetsAt: new Date(NOW + minutesLeft * 60_000).toISOString() }]
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const c = (await ui.find({ type: 'Text', text: new RegExp(`^ ${usage}%$`) }))?.props.color
+    await ui.unmount()
+    return c
+  }
+  const [GREEN, YELLOW, ORANGE, RED] = ['#22c55e', '#eab308', '#f97316', '#ef4444']
+  // 97% with 3 minutes of 5h left (99% elapsed) heads for 98%: fine.
+  expect(await color(97, 3)).toBe(GREEN)
+  // Half the window gone: 60% heads for 120%, 70% for 140%, 80% for 160%.
+  expect(await color(60, 150)).toBe(YELLOW)
+  expect(await color(70, 150)).toBe(ORANGE)
+  expect(await color(80, 150)).toBe(RED)
+  // A tenth gone and 40% used is a runaway; 5% a minute or so in is not (counted as a tenth gone).
+  expect(await color(40, 270)).toBe(RED)
+  expect(await color(5, 297)).toBe(GREEN)
+  // A spent window is red however late it is.
+  expect(await color(100, 3)).toBe(RED)
+})
+
 test('/cd refreshes the directory and its git at once', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const set: Record<string, unknown> = {}

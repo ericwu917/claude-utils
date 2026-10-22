@@ -588,11 +588,15 @@ function fmtCost(c: number | null) {
   return `$${(c / 1000).toFixed(0)}K`
 }
 
+// Colored by where the window is headed: usage projected to its end at the pace
+// so far, so a high figure near the reset is fine and a fast start is not. Until
+// a tenth of the window has passed it counts as a tenth, so a little early use
+// does not project as a runaway. Only a spent window is red regardless.
 function rateColor(usage: number, time: number) {
-  if (usage >= 90) return RED
-  if (time <= 0 || usage <= time) return GREEN
-  if (usage < 50 || usage <= Math.floor((time * 3) / 2)) return YELLOW
-  return ORANGE
+  if (usage >= 100) return RED
+  if (time <= 0) return GREEN
+  const projected = (usage * 100) / Math.max(time, 10)
+  return projected <= 100 ? GREEN : projected <= 125 ? YELLOW : projected <= 150 ? ORANGE : RED
 }
 
 // Share of the window's work hours [work.start, work.end) already elapsed.
