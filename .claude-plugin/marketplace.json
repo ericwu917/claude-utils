@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-utils",
+  "description": "taige's Claude Code extensions",
+  "owner": {
+    "name": "taige"
+  },
+  "plugins": [
+    {
+      "name": "feishu",
+      "source": "./plugins/feishu",
+      "description": "Feishu / Lark channel for Claude Code — messaging bridge with access control and approver-gated replies."
+    }
+  ]
+}
