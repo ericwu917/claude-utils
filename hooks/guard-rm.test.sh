@@ -48,7 +48,8 @@ check allow "rm -r $SP/sub/a $SP/sub/b"
 check allow "rm -fr \"$SP/sub\""
 check allow "rm -R -f -- $SP/sub"
 check allow "rm --recursive $SP/sub"
-check allow "rm -rf $SP/*"
+check allow "rm -rf $SP/sub/*"
+check allow "rm -rf $SP/tmp-*"
 check allow "rm -rf $SP/sub 2>/dev/null"
 check allow "rm -rf $SP_TMP/sub"
 check allow "rm -rf sub" "$SP" "$SP"
@@ -111,6 +112,35 @@ check ask "cat <<EOF
 T=$SP/sub
 EOF
 rm -rf \$T"
+
+# Bulk deletes (targets unknown to the hook) ask everywhere, scratchpad too.
+# The 2026-10-19 incident: a worker emptied the shared scratchpad this way.
+check ask "cd $SP && find . -type f | wc -l && find . -type f -print0 | xargs -0 -n1 rm && find . -depth -type d -empty -not -name . -exec rmdir {} \\; ; find . | head"
+check ask "find $SP -type f -print0 | xargs -0 rm"
+check ask "find . -type f | xargs rm -f" "$SP" "$SP"
+check ask "ls | xargs -I{} rm {}"
+check ask "xargs rm < $SP/list.txt"
+check ask "find $SP -name '*.tmp' -delete"
+check ask "find $T/repo -delete"
+check ask "find $SP -type f -exec rm {} \\;"
+check ask "find $SP -type f -exec /bin/rm -f {} +"
+check ask "find $SP -execdir rm {} \\;"
+check silent "find . -name '*.md' | xargs grep -l foo"
+check silent "find . -type d -empty -exec rmdir {} \\;"
+check silent "for d in a b; do [ -d \"\$d\" ] && find \"\$d\" -mindepth 1 -type d -empty -delete; done"
+check ask "find . -empty -delete"
+check ask "find . -type d -empty -o -name x -delete"
+check silent "find . -newer x | xargs ls -la"
+check silent "echo \"find . -delete\""
+check silent "grep -rn 'xargs rm' ."
+
+# Emptying the scratchpad root asks: it is shared by the main loop and every
+# subagent of the session.
+check ask "rm -rf $SP/*"
+check ask "rm -rf $SP/.*"
+check ask "rm -rf $SP/*.*"
+check ask "cd $SP && rm -rf *"
+check ask "rm -rf $SP/* $SP/.??*"
 
 # Everything else → ask.
 check ask "rm -rf $T/repo"

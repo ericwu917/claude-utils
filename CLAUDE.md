@@ -85,7 +85,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **heredoc 正文**（`<<'EOF' … EOF`）先剔掉再解析，否则正文里的 `T=/`、"rm -rf" 会被当命令；一行里有多个 heredoc 时不再信任变量。
 - 按 `; && || | &` 和换行切子命令（逐字符扫，引号内和反斜杠转义的不切——`grep -E "a|rm -r|b"` 是一条命令；4KB 命令约 0.1s），再用 `xargs printf` 做不执行的引号感知分词——比 CC 自己的解析器粗，是启发式不是围墙；hook 超时 CC 会走正常流程。`/`、`~` 等关键路径 CC 自己在任何模式都会弹。
 - **不用 `set -u`、要兼容 bash 3.2**：桌面 app 的 PATH 可能没有 homebrew bash，`env bash` 会落到 `/bin/bash` 3.2；3.2 在 `set -u` 下展开空数组会报 unbound 退出，stdout 为空等于放行（fail open）。也不能用关联数组。测试两个版本都要跑：`PATH=/bin:/usr/bin:/opt/homebrew/bin ./hooks/guard-rm.test.sh`。
-- 预过滤在原始 JSON 上只能做子串匹配：JSON 里换行是 `\n` 两个字符，词边界正则会漏掉行首的 `rm`。
+- **批量删除一律 ask**（scratchpad 里也一样）：`xargs … rm`、`find … -delete`、`find … -exec/-execdir/-ok rm` 删哪些文件 hook 看不见，不管带不带 `-r`。来由：2026-10-19 一个后台 worker 收尾"清理"，用 `find -print0 | xargs -0 -n1 rm` + `find -exec rmdir` 把 session scratchpad 里 1323 个文件全删了（其中大多是并行的其他 worker 的），没有 `-r`，当时判 SILENT、auto mode 放行。按分词判，引号里的 "xargs rm" 不算；`-exec rmdir` 和 `find -type d -empty -delete`（只删空目录）不算。
+- **清空 scratchpad 根目录要 ask**：scratchpad 是主 session 和它所有子 agent **共用**的，`$SP/*`、`$SP/.*`、`cd $SP && rm -rf *` 这类"根目录下名字全是通配符"的目标判为清空整个目录；删具体子目录（`$SP/sub`、`$SP/sub/*`、`$SP/tmp-*`）照旧放行。
+- 预过滤在原始 JSON 上只能做子串匹配：JSON 里换行是 `\n` 两个字符，词边界正则会漏掉行首的 `rm`；`find -delete` 不含 `rm`，预过滤另认 `-delete`。
 - 日志 `~/.claude/rm-guard.log`：磨合期 `DEBUG=1`，凡含 `rm` 一词的命令都记（ALLOW / ASK / SILENT + 命令全文），用来按真实流量调规则；稳定后改 `0` 只记 ask。
 - 测试：`hooks/guard-rm.test.sh`（stdin fixture，在 `/private/tmp` 下建临时 HOME 和 scratchpad，不写真实日志）。
 

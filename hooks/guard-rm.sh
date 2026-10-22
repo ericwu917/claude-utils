@@ -71,7 +71,8 @@ verdict() {
 
 # Cheap pre-filter on the raw JSON. Only a substring test: in JSON a newline is
 # the two chars `\n`, so a word-boundary regex here would miss "…\nrm -rf".
-[[ "$STDIN_JSON" == *rm* ]] || exit 0
+# `find -delete` deletes without the word rm.
+[[ "$STDIN_JSON" == *rm* || "$STDIN_JSON" == *-delete* ]] || exit 0
 
 # One jq pass; NUL-separated so a multi-line command survives `read`.
 { IFS= read -r -d '' CWD; IFS= read -r -d '' SP; IFS= read -r -d '' CMD; } < <(
@@ -81,7 +82,8 @@ verdict() {
 [[ -n "$CWD" ]] || CWD="$PWD"
 
 RM_WORD='(^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$)'
-[[ "$CMD" =~ $RM_WORD ]] || exit 0
+FIND_DELETE='(^|[^[:alnum:]_.-])find([^[:alnum:]_.-].*)?[[:space:]]-delete([^[:alnum:]_-]|$)'
+[[ "$CMD" =~ $RM_WORD || "$CMD" =~ $FIND_DELETE ]] || exit 0
 
 # Same canonicalization as guard-worktree-edits.sh: resolve symlinks and `..`
 # on the existing leading portion, re-append the missing tail. $2 = base dir
@@ -184,6 +186,8 @@ expand_vars() {
 
 # rm, then only flags up to a recursive one ("rm x; read -r" doesn't count).
 NESTED_REC_RM='(^|[^[:alnum:]_.-])rm([[:space:]]+-[^[:space:]]*)*[[:space:]]+(-[[:alpha:]]*[rR][[:alpha:]]*|--recursive)([^[:alnum:]_-]|$)'
+XARGS_FIND='(^|[^[:alnum:]_.-])(xargs|find)([^[:alnum:]_.-]|$)'
+ROOT_GLOB='^[.*?]*[*?][.*?]*$'   # a name made only of glob chars and dots: *, .*, *.*, .??*
 ASSIGN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*='
 NOT_LITERAL='[[:space:]$`()]'
 # shellcheck disable=SC2016  # regex, not an expansion
@@ -249,6 +253,31 @@ for i in "${!SEGS[@]}"; do
     fi
   fi
 
+  # Bulk deletes — `xargs … rm`, `find … -delete`, `find … -exec rm` — take
+  # their files from find / stdin, which the hook can't see, so they ask
+  # everywhere, the scratchpad included (2026-10-19: a worker emptied the
+  # session's shared scratchpad with `find -print0 | xargs -0 -n1 rm`, no -r).
+  # Token-based, so a quoted "xargs rm" (grep pattern, echo) doesn't count.
+  if [[ "$seg" =~ $XARGS_FIND ]]; then
+    bulk=0
+    if split_words "$seg"; then
+      # `find … -type d -empty -delete` only removes empty dirs, like rmdir.
+      emptydirs=0
+      [[ " ${TOKS[*]} " == *" -type d "* && " ${TOKS[*]} " == *" -empty "* && " ${TOKS[*]} " != *" -o "* && " ${TOKS[*]} " != *" -or "* ]] && emptydirs=1
+      seen="" ex=0
+      for t in "${TOKS[@]}"; do
+        b="${t##*/}"
+        if [[ -z "$seen" ]]; then [[ "$b" == xargs || "$b" == find ]] && seen="$b"; continue; fi
+        if [[ "$seen" == xargs ]]; then [[ "$b" == rm ]] && { bulk=1; break; }; continue; fi
+        [[ ( "$t" == -delete && $emptydirs == 0 ) || ( $ex == 1 && "$b" == rm ) ]] && { bulk=1; break; }
+        ex=0; [[ "$t" =~ ^-(exec|execdir|ok|okdir)$ ]] && ex=1
+      done
+    elif [[ "$seg" =~ $RM_WORD || "$seg" =~ $FIND_DELETE ]]; then bulk=1
+    fi
+    [[ $bulk == 1 ]] && verdict ASK "guard-rm: bulk delete (xargs rm / find -delete / find -exec rm); the files it removes can't be checked. Please confirm:
+  $seg"
+  fi
+
   if ! [[ "$seg" =~ $RM_WORD ]]; then OTHER=$((OTHER + 1)); continue; fi
 
   if ! split_words "$seg"; then
@@ -301,7 +330,13 @@ for i in "${!SEGS[@]}"; do
     if [[ -z "$bad" ]]; then
       for d in "${DIRS[@]}"; do
         abs="$(canon "$t" "$d")"
+        [[ "$abs" == "$SP" ]] && { bad="is the scratchpad itself"; break; }
         [[ "$abs" == "$SP/"?* ]] || { bad="outside the scratchpad ($abs)"; break; }
+        # $SP/*, $SP/.*, `cd $SP && rm -rf *`: the main session and every
+        # subagent share this directory, so emptying it asks.
+        if [[ "${abs%/*}" == "$SP" && "${abs##*/}" =~ $ROOT_GLOB ]]; then
+          bad="empties the scratchpad root, which the main session and all its subagents share"; break
+        fi
         [[ "$t" == /* ]] && break
       done
     fi
