@@ -104,6 +104,21 @@ describe('parseContent: post', () => {
     )
   })
 
+  test('text messages: Markdown auto-links keep only their text, other links stay', () => {
+    // Shape observed from a real text message: the same pasted curl, with the
+    // auto-links inlined as [text](href).
+    const text =
+      `-H 'origin: [https://app.example.com](https://app.example.com/)' ` +
+      `UA Chrome/[155.0.0.0](http://155.0.0.0/) ` +
+      `--data-raw '{"email":"[user@example.com](mailto:user@example.com)"}' ` +
+      `see [文档](https://docs.example.com/x) [a](b)`
+    expect(parseContent('text', JSON.stringify({ text }), [], BOT)).toBe(
+      `-H 'origin: https://app.example.com' UA Chrome/155.0.0.0 ` +
+        `--data-raw '{"email":"user@example.com"}' ` +
+        `see [文档](https://docs.example.com/x) [a](b)`,
+    )
+  })
+
   test('link whose text is the URL prints once; @all in post', () => {
     const p = {
       content: [

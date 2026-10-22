@@ -362,6 +362,15 @@ export function isAutoLink(text: string, href: string): boolean {
   return norm(text) === norm(href)
 }
 
+// In text messages the same auto-links arrive inline as Markdown,
+// "[a@b.com](mailto:a@b.com)". Unwrap those to the text; other [x](y) is
+// left as the sender typed it.
+const MD_LINK_RE = /\[([^\[\]\n]+)\]\(((?:https?:\/\/|mailto:|tel:)[^()\s]*)\)/gi
+
+export function unwrapAutoLinks(text: string): string {
+  return text.replace(MD_LINK_RE, (whole, t: string, href: string) => (isAutoLink(t, href) ? t : whole))
+}
+
 // State for one rendering pass: images are numbered in the order they appear,
 // the same numbering the downloads and the image_N meta keys use.
 type RenderCtx = {
@@ -492,7 +501,7 @@ function renderMessage(
     if (messageType === 'text') {
       const text = (JSON.parse(content) as { text?: unknown }).text
       if (typeof text !== 'string') throw new Error('no text')
-      return done(replaceMentionKeys(text, ms, botOpenId).trim())
+      return done(replaceMentionKeys(unwrapAutoLinks(text), ms, botOpenId).trim())
     }
     if (messageType === 'post') {
       const body = findPostBody(JSON.parse(content))
