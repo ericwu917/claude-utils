@@ -81,7 +81,7 @@ CLI 进度条的底轨颜色跟 CC 的主题（`/config` → theme）：`light*`
 把飞书（或 Lark 国际版）机器人接进 Claude Code session 的 channel 插件，派生自官方 Discord channel 插件。名单里的人发来的消息转给 Claude，Claude 用 `reply` 工具回复；发往群聊和他人的回复要等审批人在私聊里点头（卡片按钮，或限时的自动发送模式）。发给机器人的图片和文件会下载到本地，Claude 用 Read 查看。它作为插件从本仓库的 marketplace 安装，不经 `install.sh`：
 
 ```
-/plugin marketplace add taige/claude-utils
+/plugin marketplace add ericwu917/claude-utils
 /plugin install feishu@claude-utils
 ```
 

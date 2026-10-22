@@ -132,7 +132,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 派生自官方 Discord channel 插件（Apache-2.0，目录里自带 LICENSE，与仓库根的 MIT 并存）。`server.ts` 是 stdio MCP server（Bun），声明 `claude/channel` 与 `claude/channel/permission`；纯逻辑在 `lib.ts`（文件头约定无 I/O），下载与 inbox 读写在 `inbox.ts`。用户文档 `README.md` / `ACCESS.md`，访问控制 skill 在 `skills/access`、`skills/configure`。
 
-**安装与运行时**：经 `.claude-plugin/marketplace.json`（marketplace 名 `claude-utils`）安装：`/plugin marketplace add taige/claude-utils` + `/plugin install feishu@claude-utils`。GitHub 源装进 `~/.claude/plugins/cache/`，按 `plugin.json` 的 `version` 缓存——发布改动要提版本号。**用本地目录作 marketplace 源时，插件直接从源目录运行**（`CLAUDE_PLUGIN_ROOT` 指向源目录，不是 cache 拷贝），开发期重启 session 就加载 worktree 里的新代码，但也意味着切分支会改到正在跑的插件。
+**安装与运行时**：经 `.claude-plugin/marketplace.json`（marketplace 名 `claude-utils`）安装：`/plugin marketplace add ericwu917/claude-utils` + `/plugin install feishu@claude-utils`。GitHub 源装进 `~/.claude/plugins/cache/`，按 `plugin.json` 的 `version` 缓存——发布改动要提版本号。**用本地目录作 marketplace 源时，插件直接从源目录运行**（`CLAUDE_PLUGIN_ROOT` 指向源目录，不是 cache 拷贝），开发期重启 session 就加载 worktree 里的新代码，但也意味着切分支会改到正在跑的插件。
 
 以下是实测得来、改代码时要记住的点：
 - **`FEISHU_CHANNEL=1` 才连飞书**：user 级插件会在**每个** session 起 MCP server（装插件时连已经开着的桌面 app session 也会热加载），而飞书每条事件只推给应用的**一条**长连接——非 channel session 的 server 会吞消息。所以 `.mcp.json` 透传 `FEISHU_CHANNEL`，未开启时不查凭据、不连长连接、不建 inbox，`reply` 直接报错。

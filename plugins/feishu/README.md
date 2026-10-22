@@ -50,7 +50,7 @@
 以下是 Claude Code 里的命令 —— 先运行 `claude` 进入 session。
 
 ```
-/plugin marketplace add taige/claude-utils
+/plugin marketplace add ericwu917/claude-utils
 /plugin install feishu@claude-utils
 ```
 

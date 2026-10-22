@@ -81,7 +81,7 @@ Replaced by the statusband mod above; `install.sh --statusline` still installs i
 A Claude Code channel plugin that bridges a Feishu (or Lark) bot into a Claude Code session, derived from the official Discord channel plugin. Messages from allowlisted people reach Claude; Claude answers with a `reply` tool, and replies to groups or other people wait for an approver's OK in a direct chat (card buttons, or a timed auto-send mode). Images and files sent to the bot are downloaded for Claude to Read. Installed as a plugin from this repo's marketplace, not by `install.sh`:
 
 ```
-/plugin marketplace add taige/claude-utils
+/plugin marketplace add ericwu917/claude-utils
 /plugin install feishu@claude-utils
 ```
 
