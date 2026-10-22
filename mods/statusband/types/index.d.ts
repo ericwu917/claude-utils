@@ -42,6 +42,8 @@ declare module 'claude-code' {
       awaitingAgents: boolean
       // The account's plan tier from /api/oauth/profile (`20x`, `5x`); null otherwise.
       tier: string | null
+      // The account's email before the @, from the same profile answer; null if none.
+      accountName: string | null
     }
   }
 }

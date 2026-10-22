@@ -28,6 +28,7 @@ const ctxWarned = atom({ plugin: 'statusband', key: 'ctxWarned' } as const, fals
 const taskStartedAt = atom({ plugin: 'statusband', key: 'taskStartedAt' } as const, null as number | null)
 const awaitingAgents = atom({ plugin: 'statusband', key: 'awaitingAgents' } as const, false)
 const tier = atom({ plugin: 'statusband', key: 'tier' } as const, null as string | null)
+const accountName = atom({ plugin: 'statusband', key: 'accountName' } as const, null as string | null)
 
 // Work hours [start, end), as statusline.sh's STATUSLINE_WORK_START / _END
 // (default 9-22): outside them the 5h/7d bars go red, and 7d paces on them
@@ -369,8 +370,9 @@ async function refreshFable($: EngineInterface) {
 // app's identity env rewrites ~/.claude.json's account while the CLI's credential
 // stays, and one account's figures then land under the other's key. Asked again
 // every ACCOUNT_TTL, so a /login moves the key too. Unknown → null, and nothing
-// is shared (each session fetches alone). The same answer carries the plan's
-// rate-limit tier (`default_claude_max_20x` → `20x`; anything else → null).
+// is shared (each session fetches alone). The same answer carries the account's
+// name (its email before the @) and the plan's rate-limit tier
+// (`default_claude_max_20x` → `20x`; anything else → null).
 let account: Promise<{ uuid: string | null; at: number }> | null = null
 
 async function accountStoreKey($: EngineInterface, kind: 'fable' | 'rates') {
@@ -393,6 +395,8 @@ async function profileAccount($: EngineInterface, now: number) {
     if (typeof uuid === 'string' && uuid) {
       const t = /_(\d+x)$/.exec(String(body.organization?.rate_limit_tier ?? ''))?.[1] ?? null
       await update($, tier, () => t)
+      const name = String(body.account.email ?? '').split('@')[0] || null
+      await update($, accountName, () => name)
       return { uuid, at: now }
     }
     $.ui.log(`statusband: profile fetch got HTTP ${res.status}`, { to: 'debug' })
@@ -1094,6 +1098,7 @@ export const register: Register = on => {
       const mdl = await read($, model)
       const ver = await read($, version)
       const tr = await read($, tier)
+      const who = await read($, accountName)
       const sep: Piece = { text: ' | ', dim: true }
 
       const line1: Run[] = [
@@ -1148,7 +1153,19 @@ export const register: Register = on => {
           ],
         },
         { drop: 5, pieces: [{ text: ` (${fmtTokens(used)}/${fmtTokens(ctx?.window ?? 0)})`, dim: true }] },
-        ...(tr ? [{ drop: 2, pieces: [sep, { text: tr, color: tr === '20x' ? CYAN : YELLOW }] }] : []),
+        // The account as `name(20x)`: the name alone without a tier, `(20x)` without a name.
+        ...(tr || who
+          ? [
+              {
+                drop: 2,
+                pieces: [
+                  sep,
+                  ...(who ? [{ text: who }] : []),
+                  ...(tr ? [{ text: `(${tr})`, color: tr === '20x' ? CYAN : YELLOW }] : []),
+                ],
+              },
+            ]
+          : []),
         ...limits.flatMap(({ label, p, cells, mark }): Run[] => [
           {
             drop: 0,

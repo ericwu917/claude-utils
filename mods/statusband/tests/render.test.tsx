@@ -184,23 +184,26 @@ test('5h/7d readings are shared with the account\'s other sessions', async ($, o
   expect(shown.at(-1)).toEqual(five(60))
 })
 
-test('the plan tier comes from the credential\'s profile and follows a re-login', async ($, on) => {
+test('the account name and plan tier come from the credential\'s profile and follow a re-login', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, {})
   let rateLimitTier = 'default_claude_max_20x'
+  let email = 'first.one@example.com'
   on('session.authorize', () => ({ value: { handle: 'h', kind: 'oauth' } }) as any)
   on('http.fetch', ($, e: any) =>
     ({
       value: e.url.endsWith('/api/oauth/profile')
-        ? { ok: true, status: 200, text: JSON.stringify({ account: { uuid: 'acct' }, organization: { rate_limit_tier: rateLimitTier } }) }
+        ? { ok: true, status: 200, text: JSON.stringify({ account: { uuid: 'acct', email }, organization: { rate_limit_tier: rateLimitTier } }) }
         : { ok: false, status: 503, text: '' },
     }) as any,
   )
   on('store.get', () => ({ value: undefined }) as any)
   on('store.set', () => ({ value: undefined }) as any)
   const tiers: unknown[] = []
+  const names: unknown[] = []
   on('state.set', ($, e: any, next) => {
     if (e.plugin === 'statusband' && e.key === 'tier') tiers.push(e.value)
+    if (e.plugin === 'statusband' && e.key === 'accountName') names.push(e.value)
     return next(e)
   })
   on('session.start', () => ({ cwd: '/tmp' }))
@@ -213,11 +216,15 @@ test('the plan tier comes from the credential\'s profile and follows a re-login'
 
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   expect(tiers.at(-1)).toBe('20x')
+  expect(names.at(-1)).toBe('first.one')
 
-  // A /login to a Pro account: the next ask of the profile drops the tier.
+  // A /login to another, Pro account: the next ask of the profile drops the
+  // tier and names the new account.
   rateLimitTier = 'default_claude_pro'
+  email = 'second@example.com'
   await clock.advance(11 * 60_000)
   expect(tiers.at(-1)).toBeNull()
+  expect(names.at(-1)).toBe('second')
 })
 
 test('a newer installed version gets one toast of its CHANGELOG, CLI only, once it has a section', async ($, on) => {
@@ -423,6 +430,7 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
     version: { current: '2.1.286', latest: '2.1.289' },
     context: { tokens: 70000, window: 200000, percent: 35 },
     tier: '20x',
+    accountName: 'someone',
   }
   // Beneath the plugin, answer its state reads with the session's figures.
   // A state.get hook answers `{ value: StateRead }`, the read itself wrapped.
@@ -434,25 +442,26 @@ test('draws every segment on both surfaces once the data is in', async ($, on) =
   expect(await term.findAll({ type: 'Raster' })).toHaveLength(3)
   expect(await term.find({ type: 'Text', text: /fb67%/ })).toBeDefined()
   expect(await term.find({ type: 'Text', text: /↑/ })).toBeDefined()
-  expect(await term.find({ type: 'Text', text: /^20x$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /^someone$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /^\(20x\)$/ })).toBeDefined()
   // The directory is a file: link (cmd+click opens it in Finder), as statusline.sh's OSC 8 one.
   expect(await term.find({ type: 'Markdown', text: /\[claude-utils\]\(file:\/\/\/Users\/someone\/claude-utils\)/ })).toBeDefined()
   await term.unmount()
 
-  // A 91-column terminal: line 2 is 99 cells wide in full, so the context
+  // A 97-column terminal: line 2 is 108 cells wide in full, so the context
   // token counts go first and every bar still shows (nothing wraps).
-  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 91 } })
+  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 97 } })
   expect(await narrow.findAll({ type: 'Raster' })).toHaveLength(3)
   expect(await narrow.find({ type: 'Text', text: /70k\/200k/ })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: /3d0h/ })).toBeDefined()
-  expect(await narrow.find({ type: 'Text', text: /^20x$/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /^\(20x\)$/ })).toBeDefined()
   await narrow.unmount()
 
   // 20x and 5x draw in different colors.
   const tierColor = async (t: string) => {
     values.tier = t
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    const color = (await ui.find({ type: 'Text', text: new RegExp(`^${t}$`) }))?.props.color
+    const color = (await ui.find({ type: 'Text', text: `(${t})` }))?.props.color
     await ui.unmount()
     return color
   }
