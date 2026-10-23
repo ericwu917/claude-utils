@@ -57,7 +57,7 @@ Arguments passed: `$ARGUMENTS`
     }
   },
   "seen": {
-    "<open_id>": { "chatId": "<chat_id>", "name": "...", "lastAt": <ms>, "count": 1 }
+    "<open_id>": { "chatId": "<chat_id>", "name": "...", "lastAt": <ms>, "count": 1, "requested": ["<chat_id>"] }
   },
   "seenGroups": {
     "<chat_id>": { "name": "...", "lastAt": <ms>, "count": 1 }
@@ -66,6 +66,7 @@ Arguments passed: `$ARGUMENTS`
   "requireReplyApproval": true,
   "autoApproveUntil": 0,
   "autoSendCopy": false,
+  "joinRequests": true,
   "displayNames": { "<open_id>": "<display name>" }
 }
 ```
@@ -81,7 +82,13 @@ pending:{}, seen:{}, seenGroups:{}}`. Missing keys take those defaults too.
 - `seen` — strangers who @mentioned the bot in an opted-in group and were
   dropped (max 50, kept 7 days). `seenGroups` — groups that are not opted in
   where someone @mentioned the bot (max 20, kept 7 days). The server writes
-  these; the skill only reads them and deletes entries.
+  these; the skill only reads them and deletes entries. A `seen` entry's
+  `requested` lists the group chat_ids where the server already sent that
+  person's join request (group receipt + a card to each approver; 放行 on the
+  card adds them to that group's `allowFrom`).
+- `joinRequests` — `false` turns join requests off (strangers who @ the bot
+  in an opted-in group are then only dropped and noted in `seen`). Absent or
+  anything but `false` = on.
 - `autoApproveUntil` — auto-send ("sleep") mode end time in ms; 0 or absent
   = off. Set only by an approver from Feishu (`auto` / `auto <N>h` /
   `auto off` in their direct chat with the bot). This skill never changes it,
@@ -124,7 +131,9 @@ Parse `$ARGUMENTS` (space-separated). If empty or unrecognized, show status.
    allowFrom and approvers, show its `displayNames` entry if there is one
    (as `备注 "<name>"`).
 3. **Seen senders** — list each `seen` entry: open_id, its `displayNames`
-   entry if any, name if present, which chat_id, count, last seen. Suggest `/feishu:access allow <open_id>`
+   entry if any, name if present, which chat_id, count, last seen, and
+   "已申请 <chat_id…>" when `requested` is non-empty (a join request card
+   already went to the approvers). Suggest `/feishu:access allow <open_id>`
    (global) or `/feishu:access group add <chat_id> --allow <open_id>` (this
    group only).
 4. **Seen groups** — list each `seenGroups` entry: chat_id, name if
@@ -206,14 +215,24 @@ command.
 1. Validate `<mode>` is one of `pairing`, `allowlist`, `disabled`.
 2. Read (create default if missing), set `dmPolicy`, write.
 
-### `group add <chat_id>` (optional: `--no-mention`, `--allow id1,id2`)
+### `group add <chat_id>` (optional: `--no-mention` / `--mention`, `--allow id1,id2`)
 
 1. Read (create default if missing).
-2. Set `groups[<chat_id>] = { requireMention: !hasFlag("--no-mention"),
-   allowFrom: parsedAllowList }`.
-3. Delete `seenGroups[<chat_id>]`, and `seen[<id>]` for every id in the
+2. If `groups[<chat_id>]` does **not** exist, create it:
+   `{ requireMention: !hasFlag("--no-mention"), allowFrom: parsedAllowList }`.
+3. If it **already exists, merge — never overwrite**:
+   - `--allow` ids are added to its existing `allowFrom` (dedupe); ids
+     already there stay.
+   - `requireMention` changes only with an explicit flag: `--no-mention` →
+     `false`, `--mention` → `true`. Without either, keep the current value.
+   - Every other key of the group entry is kept as is.
+   - Tell the user what changed (ids added, mention setting) — so
+     `group add <chat_id> --allow <open_id>` is the safe way to let one more
+     person in. To remove someone, edit the list explicitly; this command
+     never removes ids.
+4. Delete `seenGroups[<chat_id>]`, and `seen[<id>]` for every id in the
    `--allow` list, if present.
-4. Write. Remind the user: an empty group `allowFrom` does **not** mean
+5. Write. Remind the user: an empty group `allowFrom` does **not** mean
    "anyone in the group" — only that group's `allowFrom`, the global
    `allowFrom` and approvers can trigger the bot there.
 
@@ -224,12 +243,15 @@ command.
 ### `set <key> <value>`
 
 Delivery/UX config. Supported keys: `mentionPatterns`,
-`requireReplyApproval`, `autoSendCopy`, `replyToMode`, `textChunkLimit`,
-`chunkMode`. Validate types:
+`requireReplyApproval`, `joinRequests`, `autoSendCopy`, `replyToMode`,
+`textChunkLimit`, `chunkMode`. Validate types:
 - `mentionPatterns`: JSON array of regex strings (matched case-insensitively)
 - `requireReplyApproval`: `true` | `false`. `false` lets Claude post to
   groups and other people without an approver's OK — confirm the user
   really means it before writing
+- `joinRequests`: `true` | `false` (default true). `false` stops the group
+  receipt and approver card for strangers who @ the bot in an opted-in group.
+  Write a JSON boolean, not a string
 - `autoSendCopy`: `true` | `false` (default false). `true` copies every
   reply posted in auto-send mode to each approver; `false` sends no copies
   (the auto-send status card, expiry notice and permission prompts still go

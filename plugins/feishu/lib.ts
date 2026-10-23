@@ -30,6 +30,8 @@ export type SeenSender = {
   name?: string
   lastAt: number
   count: number
+  /** Group chat_ids where a join request was already sent for this sender (one per group until the entry expires). */
+  requested?: string[]
 }
 
 /** An unconfigured group where someone mentioned the bot. */
@@ -79,6 +81,8 @@ export type Access = {
    * (/feishu:access name). Used instead of Feishu's name when present.
    */
   displayNames?: Record<string, string>
+  /** Unlisted senders who @ the bot in an opted-in group get a join request to the approvers. Default: true. */
+  joinRequests?: boolean
 }
 
 export function defaultAccess(): Access {
@@ -111,6 +115,7 @@ export function normalizeAccess(parsed: Partial<Access>): Access {
     autoApproveUntil: validAutoUntil(parsed.autoApproveUntil),
     autoSendCopy: parsed.autoSendCopy,
     displayNames: validDisplayNames(parsed.displayNames),
+    joinRequests: parsed.joinRequests,
   }
 }
 
@@ -1267,15 +1272,25 @@ const CODE_RE = /^[a-km-z]{5}$/
 /** Auto-send control card button: exactly { k: 'auto', a }. */
 export type AutoButtonValue = { k: 'auto'; a: 'on' | 'off' }
 
+/** Join-request card button: { k: 'join', id: <request id>, a }. allow = 放行, deny = 忽略. */
+export type JoinButtonValue = { k: 'join'; id: string; a: CardDecision }
+
 export type CardActionParse =
   | { ok: false; reason: 'disabled' | 'not-approver' | 'bad-value' }
-  | { ok: true; operator: string; messageId?: string; chatId?: string; value: CardButtonValue | AutoButtonValue }
+  | {
+      ok: true
+      operator: string
+      messageId?: string
+      chatId?: string
+      value: CardButtonValue | AutoButtonValue | JoinButtonValue
+    }
 
 /**
  * Validate a card.action.trigger callback (SDK-flattened: operator / action /
  * context at the top level). Only an approver's click counts, and the value
- * must be exactly { k, id, a } with fixed k / a and a 5-letter [a-km-z] id,
- * or exactly { k: 'auto', a: 'on' | 'off' } — anything else is rejected.
+ * must be exactly { k, id, a } with k perm / reply / join, a allow / deny and
+ * a 5-letter [a-km-z] id, or exactly { k: 'auto', a: 'on' | 'off' } —
+ * anything else is rejected.
  */
 export function parseCardAction(
   raw: unknown,
@@ -1306,17 +1321,17 @@ export function parseCardAction(
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, reason: 'bad-value' }
   const v = value as Record<string, unknown>
   const keys = Object.keys(v).sort().join(',')
-  let parsed: CardButtonValue | AutoButtonValue
+  let parsed: CardButtonValue | AutoButtonValue | JoinButtonValue
   if (v.k === 'auto') {
     if (keys !== 'a,k') return { ok: false, reason: 'bad-value' }
     if (v.a !== 'on' && v.a !== 'off') return { ok: false, reason: 'bad-value' }
     parsed = { k: 'auto', a: v.a }
   } else {
     if (keys !== 'a,id,k') return { ok: false, reason: 'bad-value' }
-    if (v.k !== 'perm' && v.k !== 'reply') return { ok: false, reason: 'bad-value' }
+    if (v.k !== 'perm' && v.k !== 'reply' && v.k !== 'join') return { ok: false, reason: 'bad-value' }
     if (v.a !== 'allow' && v.a !== 'deny') return { ok: false, reason: 'bad-value' }
     if (typeof v.id !== 'string' || !CODE_RE.test(v.id)) return { ok: false, reason: 'bad-value' }
-    parsed = { k: v.k, id: v.id, a: v.a }
+    parsed = v.k === 'join' ? { k: 'join', id: v.id, a: v.a } : { k: v.k, id: v.id, a: v.a }
   }
 
   const messageId = ev.context?.open_message_id ?? ev.open_message_id
@@ -1360,6 +1375,194 @@ export function routeCardAction(
 export function cardResultLine(kind: CardKind, decision: CardDecision): string {
   if (kind === 'perm') return decision === 'allow' ? '✅ 已允许' : '❌ 已拒绝'
   return decision === 'allow' ? '✅ 已批准，发送中' : '🗑 已丢弃'
+}
+
+// ---------------------------------------------------------------------------
+// Join requests: an unlisted sender @ the bot in an opted-in group gets one
+// group receipt, and every approver a card to let them in.
+
+export const JOIN_RECEIPT = '已收到你的开通申请，管理员开通后再 @我 提问。'
+export const JOIN_ALLOWED_NOTICE = '已开通，现在可以 @我 提问了。'
+export const JOIN_RATE_PER_HOUR = 5
+export const JOIN_PREVIEW_CHARS = 200
+const JOIN_RATE_WINDOW_MS = 60 * 60 * 1000
+
+export function joinRequestsOn(access: Pick<Access, 'joinRequests'>): boolean {
+  return access.joinRequests !== false
+}
+
+export type JoinDecision = 'request' | 'rate-limited' | 'none'
+
+/**
+ * Should this dropped group message become a join request? All of: the
+ * channel isn't disabled, the group is opted in, the message addressed the
+ * bot, the sender is on none of the group / global / approver lists, there
+ * is an approver to ask, joinRequests isn't off, and this sender hasn't been
+ * asked about in this group yet (seen[...].requested). Then 'rate-limited'
+ * if the group already had JOIN_RATE_PER_HOUR requests in the last hour
+ * (`recent` = their times), else 'request'. Never in static mode
+ * (`isStatic`): its lists are pinned at boot, so 放行 could not take effect.
+ */
+export function joinRequestDecision(
+  access: Access,
+  m: {
+    chatId: string
+    senderId: string
+    mentioned: boolean
+    now: number
+    recent: readonly number[]
+    isStatic?: boolean
+  },
+): JoinDecision {
+  if (m.isStatic || access.dmPolicy === 'disabled' || !joinRequestsOn(access)) return 'none'
+  const policy = access.groups[m.chatId]
+  if (!policy || !m.mentioned) return 'none'
+  if (
+    (policy.allowFrom ?? []).includes(m.senderId) ||
+    access.allowFrom.includes(m.senderId) ||
+    access.approvers.includes(m.senderId)
+  ) {
+    return 'none'
+  }
+  if (access.approvers.length === 0) return 'none'
+  if (requestedIn(access.seen[m.senderId]).includes(m.chatId)) return 'none'
+  const inWindow = m.recent.filter(t => t > m.now - JOIN_RATE_WINDOW_MS).length
+  return inWindow >= JOIN_RATE_PER_HOUR ? 'rate-limited' : 'request'
+}
+
+// seen[...].requested from access.json (hand-editable): anything but a list of strings counts as none.
+function requestedIn(entry: SeenSender | undefined): string[] {
+  const r: unknown = entry?.requested
+  return Array.isArray(r) ? r.filter((x): x is string => typeof x === 'string') : []
+}
+
+/** Record that a request went out for this sender in this group (on their seen entry, which gate just wrote). */
+export function markJoinRequested(access: Access, senderId: string, chatId: string, now: number): void {
+  const prev = access.seen[senderId]
+  const entry: SeenSender = prev ?? { chatId, lastAt: now, count: 1 }
+  entry.requested = [...new Set([...requestedIn(entry), chatId])]
+  access.seen[senderId] = entry
+}
+
+/**
+ * 放行: add the sender to the group's allowFrom (deduped) and take this
+ * group off their seen entry's `requested`; the entry itself goes only when
+ * no other group is left there (their requests elsewhere stay marked).
+ * 'group-closed' (access untouched) when the group is gone.
+ */
+export function applyJoinAllow(access: Access, chatId: string, senderId: string): 'ok' | 'group-closed' {
+  const policy = access.groups[chatId]
+  if (!policy) return 'group-closed'
+  const list = policy.allowFrom ?? []
+  policy.allowFrom = list.includes(senderId) ? list : [...list, senderId]
+  const entry = access.seen[senderId]
+  const rest = requestedIn(entry).filter(c => c !== chatId)
+  if (entry && rest.length > 0) entry.requested = rest
+  else delete access.seen[senderId]
+  return 'ok'
+}
+
+export type JoinClickOutcome = 'static' | 'group-closed' | 'allowed' | 'ignored'
+
+/**
+ * A 放行 / 忽略 click on a request. Static mode: nothing changes ('static') —
+ * the access object is the boot snapshot every gate call reads, so changing
+ * it would let the sender in although nothing can be saved. 放行 otherwise
+ * applies applyJoinAllow (the caller saves); 忽略 changes nothing.
+ */
+export function resolveJoinClick(
+  access: Access,
+  req: { chatId: string; senderId: string },
+  decision: CardDecision,
+  opts: { isStatic: boolean },
+): JoinClickOutcome {
+  if (opts.isStatic) return 'static'
+  if (decision === 'deny') return 'ignored'
+  return applyJoinAllow(access, req.chatId, req.senderId) === 'group-closed' ? 'group-closed' : 'allowed'
+}
+
+/**
+ * The applicant's message for the card, as one line: line / paragraph
+ * breaks become spaces (so it can't fake the card's own field lines or a
+ * terminal command), control / format characters go, first 200 characters
+ * + "…".
+ */
+export function joinMessagePreview(text: string): string {
+  const clean = text
+    .replace(/\r\n|[\n\r\t\v\f\x85\p{Zl}\p{Zp}]/gu, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .trim()
+  const chars = [...clean]
+  return chars.length > JOIN_PREVIEW_CHARS ? `${chars.slice(0, JOIN_PREVIEW_CHARS).join('')}…` : clean
+}
+
+export type JoinCardView = {
+  id: string
+  chatId: string
+  chatName?: string
+  senderId: string
+  senderName?: string
+  /** joinMessagePreview of the message (written by someone off the lists). */
+  preview: string
+}
+
+/** The approver's card for a join request: group, applicant, message, 放行 / 忽略 (pending) or the result (done). */
+export function buildJoinCard(view: JoinCardView, state: CardState, secrets: Secrets): Record<string, unknown> {
+  const chatName = sanitizeName(view.chatName)
+  const senderName = sanitizeName(view.senderName)
+  const elements: Record<string, unknown>[] = [
+    plainDiv(`群：${cardText(chatName ? `${chatName}（${view.chatId}）` : view.chatId, secrets)}`),
+    plainDiv(`申请人：${cardText(senderName ? `${senderName}（${view.senderId}）` : view.senderId, secrets)}`),
+    plainDiv(`消息：${cardText(view.preview, secrets)}`),
+  ]
+  if (state.status === 'pending') {
+    const value = (a: CardDecision): JoinButtonValue => ({ k: 'join', id: view.id, a })
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: '8px',
+      columns: [
+        { tag: 'column', width: 'auto', elements: [joinButton('放行', 'primary', value('allow'))] },
+        { tag: 'column', width: 'auto', elements: [joinButton('忽略', 'default', value('deny'))] },
+      ],
+    })
+  } else {
+    elements.push(plainDiv(cardText(state.result, secrets)))
+  }
+  elements.push(
+    plainDiv(`也可以在终端用 /feishu:access group add ${view.chatId} --allow ${view.senderId}`, {
+      text_color: 'grey',
+      text_size: 'notation',
+    }),
+  )
+  return {
+    schema: '2.0',
+    config: { update_multi: true, summary: { content: '🙋 开通申请' } },
+    header: {
+      title: { tag: 'plain_text', content: '🙋 开通申请' },
+      template: state.status === 'pending' ? 'turquoise' : 'grey',
+    },
+    body: { elements },
+  }
+}
+
+function joinButton(label: string, type: string, value: JoinButtonValue): Record<string, unknown> {
+  return { tag: 'button', type, text: { tag: 'plain_text', content: label }, behaviors: [{ type: 'callback', value }] }
+}
+
+/** Result line on a handled join card: ✅ 已放行（<操作人>） / 已忽略（<操作人>）. */
+export function joinResultLine(decision: CardDecision, operator: string): string {
+  return decision === 'allow' ? `✅ 已放行（${operator}）` : `已忽略（${operator}）`
+}
+
+/** Where a join button click goes: act on a pending request, report one already handled, or expired / unknown. */
+export function routeJoinClick(
+  id: string,
+  state: { isPending: (id: string) => boolean; handledResult: (id: string) => string | undefined },
+): { route: 'act' } | { route: 'handled'; result: string } | { route: 'expired' } {
+  if (state.isPending(id)) return { route: 'act' }
+  const result = state.handledResult(id)
+  return result !== undefined ? { route: 'handled', result } : { route: 'expired' }
 }
 
 // ---------------------------------------------------------------------------

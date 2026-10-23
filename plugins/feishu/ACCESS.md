@@ -7,7 +7,7 @@
 和 Discord 原版相比有两处安全差异：
 
 - **审批人（approvers）与可触发名单（allowFrom）分开。** 只有审批人收得到权限请求和回复审批，也只有审批人**在自己与机器人的私聊里**发的 `yes <id>` / `ok <码>` 才算数；群里谁发同样的文字都只是普通消息。
-- **群里只有名单上的人能触发。** 群的 `allowFrom` 为空**不等于**群里任何人都能用 —— 只有该群 `allowFrom`、全局 `allowFrom` 和审批人能触发。陌生人 @ 机器人会被静默丢弃并记进 `seen`，由你手动放行。
+- **群里只有名单上的人能触发。** 群的 `allowFrom` 为空**不等于**群里任何人都能用 —— 只有该群 `allowFrom`、全局 `allowFrom` 和审批人能触发。陌生人 @ 机器人时消息被丢弃、记进 `seen`，并给审批人发一张开通申请卡片，点「放行」即可（见"群聊"）。
 
 所有状态都在 `~/.claude/channels/feishu/access.json`（设了 `FEISHU_STATE_DIR` / `CLAUDE_CONFIG_DIR` 时跟着走）。`/feishu:access` 的命令就是改这个文件，而且只能由你在终端里亲手输入，Claude 不能替你调用；server 每收到一条消息都会重读，改动即时生效，不用重启。手改出错导致文件不是合法 JSON 时，server 不会挪走或重置它：继续用本进程上次成功读到的配置（从没读成功过就丢弃所有消息），也不往文件里写，等你改好为止。设 `FEISHU_ACCESS_MODE=static` 可以把配置钉在启动时的磁盘内容（static 模式下没有配对，因为配对需要运行时写文件；`seen` 也不会记录）。
 
@@ -111,7 +111,17 @@
 /feishu:access group rm oc_a0553eda9014c201e6969b478895c230
 ```
 
-能在群里触发的人 = 该群 `allowFrom` ∪ 全局 `allowFrom` ∪ 审批人。其他人 @ 机器人：消息丢弃、不回复，记进 `seen`（最多 50 条，7 天过期）；`/feishu:access allow <open_id>` 或 `group add <chat_id> --allow <open_id>` 放行，放行后对应的 `seen` 条目会被删掉。
+群已经开启时 `group add` 是**合并**，不会覆盖：`--allow` 的人并进该群现有的 `allowFrom`（去重，原有的人保留）；`requireMention` 只在显式带 `--no-mention`（改成 false）或 `--mention`（改成 true）时才改，不带就维持原样；其他设置都保留。所以给已开启的群加一个人，直接 `group add <chat_id> --allow <open_id>` 即可。这个命令不会移除任何人。
+
+能在群里触发的人 = 该群 `allowFrom` ∪ 全局 `allowFrom` ∪ 审批人。其他人 @ 机器人（或回复机器人、命中 `mentionPatterns`）时，消息照样丢弃（不转给 Claude、不下载图片、不取引用），记进 `seen`（最多 50 条，7 天过期），并发起**开通申请**：
+
+- 机器人在群里回复他那条消息：`已收到你的开通申请，管理员开通后再 @我 提问。`（插件自己发，不经 Claude、不经审批）。
+- 每个审批人私聊收到一张「🙋 开通申请」卡片：群名和 chat_id、申请人名字和 open_id、他那条消息的前 200 字（拍成一行，换行都换成空格），按钮「放行」「忽略」。
+- **放行**：把他加进该群的 `allowFrom`（合并，不动名单里原有的人），从他 `seen` 条目的 `requested` 里去掉这个群（他在别的群还有未处理的申请时保留条目，否则删掉），卡片变成 `✅ 已放行（<操作人>）`，群里回复原消息 `已开通，现在可以 @我 提问了。`。**忽略**：卡片变成 `已忽略（<操作人>）`，群里不发任何东西。多个审批人时先点的算，其他人再点只提示已被谁处理。群在放行前已关闭时只提示「该群已关闭」，不改配置。
+- 防刷屏：同一个人在同一个群只申请一次（`seen` 条目里的 `requested` 记着，条目 7 天过期后才可能再申请）；每个群每小时最多 5 次申请，超出的只记 `seen`。没有任何审批人时不发起申请。
+- 申请只存在内存里：24 小时后或重启后再点按钮，会提示「申请已过期，请在终端处理」。终端里随时可以 `/feishu:access group add <chat_id> --allow <open_id>`（或全局 `allow <open_id>`）放行，放行后对应的 `seen` 条目会被删掉。
+- 不想要这个流程：`/feishu:access set joinRequests false`，陌生人 @ 机器人就回到静默丢弃 + 记 `seen`。
+- `FEISHU_ACCESS_MODE=static` 下不发起开通申请（名单钉在启动时，放行无法生效）；万一点到旧卡片的按钮，只提示「static 模式下不能改名单，请在终端处理」，什么都不改。
 
 ## mention 判定
 
@@ -135,6 +145,8 @@
 
 **`requireReplyApproval`**：默认 `true`，发往群和审批人以外的人的回复先交审批人，见上文"审批人"。
 
+**`joinRequests`**：默认开（只有写成 `false` 才关）。已开启的群里陌生人 @ 机器人时，群里回执 + 给审批人发开通申请卡片，见上文"群聊"；关掉后只静默丢弃并记 `seen`。
+
 **`autoSendCopy`**：默认 `false`。为 `true` 时，自动发送（睡眠模式）期间发出的每条回复抄送给审批人，见上文"自动发送（睡眠模式）"。
 
 **`replyToMode`**：带 `reply_to` 的长回复被拆成多块时，`first`（默认）只有第一块引用原消息，`all` 每块都引用，`off` 都不引用。只会引用本进程见过、且确实属于目标会话的消息；否则照常发出但不引用。
@@ -155,9 +167,9 @@
 | `/feishu:access approver add ou_...` | 加审批人。 |
 | `/feishu:access approver rm ou_...` | 移除审批人。 |
 | `/feishu:access policy allowlist` | 设 `dmPolicy`。取值：`pairing`、`allowlist`、`disabled`。 |
-| `/feishu:access group add oc_...` | 开启一个群。参数：`--no-mention`、`--allow id1,id2`。 |
+| `/feishu:access group add oc_...` | 开启一个群。参数：`--no-mention` / `--mention`、`--allow id1,id2`。群已开启时是合并：`--allow` 并入现有名单，不带 mention 参数就不改 `requireMention`。 |
 | `/feishu:access group rm oc_...` | 关闭一个群。 |
-| `/feishu:access set textChunkLimit 2000` | 设置配置项：`mentionPatterns`、`requireReplyApproval`、`autoSendCopy`、`replyToMode`、`textChunkLimit`、`chunkMode`。 |
+| `/feishu:access set textChunkLimit 2000` | 设置配置项：`mentionPatterns`、`requireReplyApproval`、`joinRequests`、`autoSendCopy`、`replyToMode`、`textChunkLimit`、`chunkMode`。 |
 | `/feishu:access name ou_... 张三` | 设 open_id 的本地备注名（名字可含空格，取 open_id 之后的全部文字）；不带名字 = 删除。见上文"用户 ID"。 |
 
 ## 配置文件
@@ -186,6 +198,7 @@
   },
 
   // server 写入：已开启的群里 @ 机器人但被丢弃的陌生人（最多 50，7 天）。
+  // 条目里的 "requested": ["<chat_id>"] 表示已在这些群发过开通申请。
   "seen": {},
 
   // server 写入：未开启的群里有人 @ 机器人（最多 20，7 天）。
@@ -202,6 +215,9 @@
 
   // 自动发送期间是否把发出的回复抄送给审批人；默认 false。
   "autoSendCopy": false,
+
+  // 已开启的群里陌生人 @ 机器人时发开通申请（群里回执 + 审批人卡片）；false = 只静默丢弃。默认开。
+  "joinRequests": true,
 
   // 长回复拆块时的引用：first | all | off
   "replyToMode": "first",

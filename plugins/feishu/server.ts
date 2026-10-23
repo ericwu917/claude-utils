@@ -70,6 +70,19 @@ import {
   quotedMessageFromApi,
   withQuote,
   withTimeout,
+  resolveJoinClick,
+  buildJoinCard,
+  JOIN_ALLOWED_NOTICE,
+  JOIN_RATE_PER_HOUR,
+  JOIN_RECEIPT,
+  joinMessagePreview,
+  joinRequestDecision,
+  joinResultLine,
+  localDisplayName,
+  markJoinRequested,
+  routeJoinClick,
+  type JoinButtonValue,
+  type JoinCardView,
   type QuotedMessage,
   type Access,
   type DropNote,
@@ -1135,6 +1148,154 @@ async function enrichSeen(note: DropNote): Promise<void> {
   saveAccess(access)
 }
 
+// Join requests waiting for an approver, keyed on a 5-letter id — the only
+// thing the card buttons carry. In memory: gone after 24h or a restart, and
+// a click then says to use the terminal.
+type PendingJoin = { chatId: string; senderId: string; messageId: string; createdAt: number }
+const pendingJoins = new Map<string, PendingJoin>()
+// Cards sent per request id, so whichever approver clicks first, every copy
+// can be switched to done; `by` / `result` stay for late clicks (24h).
+type JoinCardRecord = { view: JoinCardView; messageIds: string[]; createdAt: number; result?: string; by?: string }
+const joinCards = new Map<string, JoinCardRecord>()
+// Request times per group, for JOIN_RATE_PER_HOUR.
+const joinTimes = new Map<string, number[]>()
+const JOIN_WINDOW_MS = 60 * 60 * 1000
+
+function pruneJoins(): void {
+  const now = Date.now()
+  for (const [id, p] of pendingJoins) if (p.createdAt + PENDING_REPLY_TTL_MS < now) pendingJoins.delete(id)
+  for (const [id, r] of joinCards) if (r.createdAt + PENDING_REPLY_TTL_MS < now) joinCards.delete(id)
+  for (const [chat, times] of joinTimes) {
+    const recent = times.filter(t => t > now - JOIN_WINDOW_MS)
+    if (recent.length) joinTimes.set(chat, recent)
+    else joinTimes.delete(chat)
+  }
+}
+
+// An unlisted sender addressed the bot in an opted-in group (gate dropped
+// the message and noted them). Once per sender and group, within the group's
+// hourly limit: a receipt in the group (a reply to their message) and a card
+// to every approver. Sends are best-effort — failures are logged only.
+function maybeRequestJoin(access: Access, msg: FeishuMessageEvent['message'], senderId: string, text: string): void {
+  pruneJoins()
+  const now = Date.now()
+  const decision = joinRequestDecision(access, {
+    chatId: msg.chat_id,
+    senderId,
+    mentioned: true,
+    now,
+    recent: joinTimes.get(msg.chat_id) ?? [],
+    isStatic: STATIC,
+  })
+  if (decision === 'none') return
+  if (decision === 'rate-limited') {
+    process.stderr.write(`feishu channel: join request from ${senderId} in ${msg.chat_id} skipped (over ${JOIN_RATE_PER_HOUR}/hour)\n`)
+    return
+  }
+  joinTimes.set(msg.chat_id, [...(joinTimes.get(msg.chat_id) ?? []), now])
+  markJoinRequested(access, senderId, msg.chat_id, now)
+  saveAccessChecked(access)
+
+  const id = newApprovalCode(c => pendingJoins.has(c) || joinCards.has(c))
+  pendingJoins.set(id, { chatId: msg.chat_id, senderId, messageId: msg.message_id, createdAt: now })
+  void sendText({ chat_id: msg.chat_id }, JOIN_RECEIPT, msg.message_id)
+    .then(mid => noteSent(mid, msg.chat_id))
+    .catch(err => process.stderr.write(`feishu channel: join receipt in ${msg.chat_id} failed: ${err}\n`))
+  void sendJoinCards(id, msg.chat_id, senderId, joinMessagePreview(text)).catch(err =>
+    process.stderr.write(`feishu channel: join request cards failed: ${err}\n`),
+  )
+}
+
+async function sendJoinCards(id: string, chatId: string, senderId: string, preview: string): Promise<void> {
+  const [cName, sName] = await Promise.all([
+    withTimeout(chatName(chatId), NAME_LOOKUP_TIMEOUT_MS, undefined),
+    withTimeout(userName(senderId), NAME_LOOKUP_TIMEOUT_MS, undefined),
+  ])
+  const view: JoinCardView = {
+    id,
+    chatId,
+    senderId,
+    preview,
+    ...(cName ? { chatName: cName } : {}),
+    ...(sName ? { senderName: sName } : {}),
+  }
+  const rec: JoinCardRecord = { view, messageIds: [], createdAt: Date.now() }
+  joinCards.set(id, rec)
+  const card = buildJoinCard(view, { status: 'pending' }, SECRETS)
+  for (const openId of loadAccess().approvers) {
+    void sendCard(openId, card)
+      .then(mid => rec.messageIds.push(mid))
+      .catch(err => process.stderr.write(`feishu channel: join request card to ${openId} failed: ${err}\n`))
+  }
+}
+
+// A name for a receipt, without waiting: local display name, else a cached
+// Feishu name, else the open_id. (Card callbacks must answer within 3s.)
+function knownUserName(openId: string): string {
+  return localDisplayName(loadAccess(), openId) ?? userNames.get(openId)?.name ?? openId
+}
+
+// Switch every copy of a join card to done (best-effort PATCH), except the
+// one clicked — the callback response updates that. Returns the done card.
+function markJoinCardsDone(id: string, exceptMessageId: string | undefined): Record<string, unknown> | undefined {
+  const rec = joinCards.get(id)
+  if (!rec?.result) return undefined
+  const card = buildJoinCard(rec.view, { status: 'done', result: rec.result }, SECRETS)
+  const content = serializeCard(card)
+  if (content !== null) {
+    for (const mid of rec.messageIds) {
+      if (mid === exceptMessageId) continue
+      void call(client.im.v1.message.patch({ path: { message_id: mid }, data: { content } })).catch(err => {
+        process.stderr.write(`feishu channel: failed to update join card ${mid}: ${err}\n`)
+      })
+    }
+  }
+  return card
+}
+
+// 放行 / 忽略 on a join card. Synchronous (3s callback limit): access is
+// written here, the group notice goes out in the background.
+const JOIN_STATIC_TOAST = 'static 模式下不能改名单，请在终端处理'
+
+function onJoinClick(operator: string, value: JoinButtonValue, clickedMessageId: string | undefined): CardCallbackResponse {
+  // Static mode never sends requests; a card from before a restart into
+  // static mode gets this, whatever its state. Nothing is changed.
+  if (STATIC) return { toast: { type: 'warning', content: JOIN_STATIC_TOAST } }
+  pruneJoins()
+  const route = routeJoinClick(value.id, {
+    isPending: id => pendingJoins.has(id),
+    handledResult: id => joinCards.get(id)?.result,
+  })
+  if (route.route === 'expired') return { toast: { type: 'warning', content: '申请已过期，请在终端处理' } }
+  if (route.route === 'handled') {
+    const by = joinCards.get(value.id)?.by ?? '其他审批人'
+    return { toast: { type: 'info', content: `已被 ${by} 处理` }, ...withCard(markJoinCardsDone(value.id, clickedMessageId)) }
+  }
+
+  const p = pendingJoins.get(value.id)!
+  const access = loadAccess()
+  const outcome = resolveJoinClick(access, p, value.a, { isStatic: STATIC })
+  if (outcome === 'static') return { toast: { type: 'warning', content: JOIN_STATIC_TOAST } }
+  if (outcome === 'group-closed') return { toast: { type: 'error', content: '该群已关闭' } }
+  if (outcome === 'allowed' && !saveAccessChecked(access)) {
+    return { toast: { type: 'error', content: '写入 access.json 失败，请在终端处理' } }
+  }
+  pendingJoins.delete(value.id)
+  const by = knownUserName(operator)
+  const rec = joinCards.get(value.id)
+  if (rec) {
+    rec.result = joinResultLine(value.a, by)
+    rec.by = by
+  }
+  const card = markJoinCardsDone(value.id, clickedMessageId)
+  if (value.a === 'allow') {
+    void sendText({ chat_id: p.chatId }, JOIN_ALLOWED_NOTICE, p.messageId)
+      .then(mid => noteSent(mid, p.chatId))
+      .catch(err => process.stderr.write(`feishu channel: join allowed notice in ${p.chatId} failed: ${err}\n`))
+  }
+  return { toast: { type: 'success', content: value.a === 'allow' ? '已放行' : '已忽略' }, ...withCard(card) }
+}
+
 const QUOTE_TIMEOUT_MS = 5_000
 
 // The replied-to message (one level: its own parent is not followed). null
@@ -1184,6 +1345,8 @@ async function handleInbound(ev: FeishuMessageEvent): Promise<void> {
   if (result.changed) saveAccess(access)
 
   if (result.action === 'drop') {
+    // A noted sender = unlisted, in an opted-in group, addressing the bot.
+    if (result.noted?.kind === 'sender') maybeRequestJoin(access, msg, result.noted.openId, text)
     if (result.noted) void enrichSeen(result.noted).catch(() => {})
     return
   }
@@ -1363,6 +1526,7 @@ function onCardAction(raw: unknown): CardCallbackResponse {
       ...withCard(autoStatusCard(res.note)),
     }
   }
+  if (r.value.k === 'join') return onJoinClick(r.operator, r.value, r.messageId)
 
   prunePendingReplies()
   pruneApprovalCards()

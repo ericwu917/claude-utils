@@ -1,7 +1,7 @@
 {
   "name": "feishu",
   "description": "Feishu / Lark channel for Claude Code — messaging bridge with built-in access control and approver-gated replies. Manage pairing, allowlists, approvers and policy via /feishu:access.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "taige"
   },

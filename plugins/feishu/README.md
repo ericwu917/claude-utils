@@ -121,7 +121,7 @@ DM 策略、群聊、mention 判定、审批人、回复审批、发送配置、
 
 **备注名**：飞书接口给的名字不对（个人账号改名后仍返回旧名）或拿不到（外部人员）时，在终端里 `/feishu:access name <open_id> <显示名>` 配一个本地备注名（存 `access.json` 的 `displayNames`），之后 Claude 看到的发送人、审批里的私聊对象都用它，改了不用重启；`/feishu:access name <open_id>` 删除。
 
-速查：ID 是飞书的 **open_id**（`ou_...`，按应用区分），群用 **chat_id**（`oc_...`）。默认策略 `pairing`。群按 chat_id 逐个开启；群里只有名单上的人能触发，陌生人 @ 机器人会被静默丢弃并记下来，`/feishu:access` 里能看到、手动放行。
+速查：ID 是飞书的 **open_id**（`ou_...`，按应用区分），群用 **chat_id**（`oc_...`）。默认策略 `pairing`。群按 chat_id 逐个开启；群里只有名单上的人能触发。陌生人 @ 机器人时消息不转给 Claude，机器人在群里回一句"已收到你的开通申请"，同时私聊给审批人一张开通申请卡片，点「放行」就把他加进该群名单（每人每群只申请一次，每群每小时最多 5 次；`/feishu:access set joinRequests false` 关掉后回到静默丢弃，`/feishu:access` 里能看到、手动放行）。
 
 ## 给 Claude 的工具
 
