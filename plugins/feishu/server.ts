@@ -81,6 +81,7 @@ import {
   localDisplayName,
   markJoinRequested,
   routeJoinClick,
+  welcomeMessages,
   type JoinButtonValue,
   type JoinCardView,
   type QuotedMessage,
@@ -96,6 +97,8 @@ const STATE_DIR = process.env.FEISHU_STATE_DIR
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const APPROVED_DIR = join(STATE_DIR, 'approved')
 const ENV_FILE = join(STATE_DIR, '.env')
+// Optional usage notes posted to a group after a join request is let in.
+const WELCOME_FILE = join(STATE_DIR, 'welcome.txt')
 
 // Load <state-dir>/.env into process.env. Real env wins.
 // Plugin-spawned servers don't get an env block — this is where the secret lives.
@@ -1255,7 +1258,32 @@ function markJoinCardsDone(id: string, exceptMessageId: string | undefined): Rec
 
 // 放行 / 忽略 on a join card. Synchronous (3s callback limit): access is
 // written here, the group notice goes out in the background.
-const JOIN_STATIC_TOAST = 'static 模式下不能改名单，请在终端处理'
+// welcome.txt, read fresh each time (edits apply without a restart). null =
+// missing or unreadable — then nothing extra is sent.
+function readWelcomeFile(): string | null {
+  try {
+    return readFileSync(WELCOME_FILE, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      process.stderr.write(`feishu channel: cannot read welcome.txt: ${err instanceof Error ? err.message : err}\n`)
+    }
+    return null
+  }
+}
+
+// The welcome text as plain group messages (not a reply), through sendText
+// like every outbound message; ids go into recentSentIds.
+async function sendWelcome(chatId: string): Promise<void> {
+  const access = loadAccess()
+  const parts = welcomeMessages(readWelcomeFile(), {
+    limit: chunkLimit(access),
+    mode: access.chunkMode ?? 'newline',
+    secrets: SECRETS,
+  })
+  for (const part of parts) noteSent(await sendText({ chat_id: chatId }, part), chatId)
+}
+
+const JOIN_STATIC_TOAST ='static 模式下不能改名单，请在终端处理'
 
 function onJoinClick(operator: string, value: JoinButtonValue, clickedMessageId: string | undefined): CardCallbackResponse {
   // Static mode never sends requests; a card from before a restart into
@@ -1290,7 +1318,13 @@ function onJoinClick(operator: string, value: JoinButtonValue, clickedMessageId:
   const card = markJoinCardsDone(value.id, clickedMessageId)
   if (value.a === 'allow') {
     void sendText({ chat_id: p.chatId }, JOIN_ALLOWED_NOTICE, p.messageId)
-      .then(mid => noteSent(mid, p.chatId))
+      .then(mid => {
+        noteSent(mid, p.chatId)
+        // Only after the notice went out; a failure here is logged on its own.
+        void sendWelcome(p.chatId).catch(err =>
+          process.stderr.write(`feishu channel: welcome message in ${p.chatId} failed: ${err}\n`),
+        )
+      })
       .catch(err => process.stderr.write(`feishu channel: join allowed notice in ${p.chatId} failed: ${err}\n`))
   }
   return { toast: { type: 'success', content: value.a === 'allow' ? '已放行' : '已忽略' }, ...withCard(card) }

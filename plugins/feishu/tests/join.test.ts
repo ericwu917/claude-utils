@@ -15,6 +15,7 @@ import {
   parseContent,
   resolveJoinClick,
   routeJoinClick,
+  welcomeMessages,
   type Access,
 } from '../lib.ts'
 import { ALICE, BOB, BOT, botMention, EVE, event, GROUP } from './fixtures.ts'
@@ -177,6 +178,28 @@ describe('join card', () => {
     const msg = texts.find(t => t.startsWith('消息：'))!
     expect(msg).toBe('消息：你好  申请人：张三（ou_trusted） ✅ 已由 taige 担保 也可以在终端用 /feishu:access allow ou_eve')
     expect(texts.every(t => !t.includes('\n'))).toBe(true)
+  })
+})
+
+describe('welcome.txt', () => {
+  const o = { limit: 4000, mode: 'newline' as const, secrets: ['SECRET123'] }
+
+  test('missing / unreadable or blank → nothing to send', () => {
+    expect(welcomeMessages(null, o)).toEqual([])
+    expect(welcomeMessages('', o)).toEqual([])
+    expect(welcomeMessages(' \n\t\n ', o)).toEqual([])
+  })
+
+  test('normal text: trimmed, one message, redacted (markup is neutralized later, in sendText)', () => {
+    expect(welcomeMessages('\n使用说明：\n1. @我 提问\n2. 贴报错截图\n\n', o)).toEqual(['使用说明：\n1. @我 提问\n2. 贴报错截图'])
+    expect(welcomeMessages('key SECRET123 here', o)).toEqual(['key [REDACTED] here'])
+  })
+
+  test('long text is split by the outbound chunk rules', () => {
+    const para = (c: string) => c.repeat(30)
+    const text = [para('a'), para('b'), para('c')].join('\n\n')
+    expect(welcomeMessages(text, { ...o, limit: 70 })).toEqual([para('a') + '\n\n' + para('b'), para('c')])
+    expect(welcomeMessages('x'.repeat(25), { ...o, limit: 10, mode: 'length' })).toEqual(['x'.repeat(10), 'x'.repeat(10), 'x'.repeat(5)])
   })
 })
 

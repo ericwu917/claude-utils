@@ -1383,6 +1383,20 @@ export function cardResultLine(kind: CardKind, decision: CardDecision): string {
 
 export const JOIN_RECEIPT = '已收到你的开通申请，管理员开通后再 @我 提问。'
 export const JOIN_ALLOWED_NOTICE = '已开通，现在可以 @我 提问了。'
+
+/**
+ * The welcome text sent to a group after JOIN_ALLOWED_NOTICE, from
+ * <state-dir>/welcome.txt (`raw`: the file's contents, null when it's missing
+ * or unreadable). Nothing to send ([]) when it's null or blank; otherwise
+ * the trimmed text, redacted and split like any outbound message.
+ */
+export function welcomeMessages(
+  raw: string | null,
+  o: { limit: number; mode: 'length' | 'newline'; secrets: Secrets },
+): string[] {
+  const text = (raw ?? '').trim()
+  return text ? chunkRedacted(text, o.limit, o.mode, o.secrets) : []
+}
 export const JOIN_RATE_PER_HOUR = 5
 export const JOIN_PREVIEW_CHARS = 200
 const JOIN_RATE_WINDOW_MS = 60 * 60 * 1000
