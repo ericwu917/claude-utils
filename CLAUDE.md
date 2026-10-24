@@ -30,6 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **`WorktreeCreate` 的 stdin**：worktree name 字段在顶层 `.name`，**不是** `.tool_input.name`。脚本里用 `jq_first` 探测多个路径是为了抗未来字段变动，这个模式要保留。
 - **`transcript_path` 空 = 桌面版自动创建**：CLI 里 `claude -w <name>` 总是带着真实 session 的 `transcript_path`；桌面版自动开 worktree 时还没有 transcript，发的 `.transcript_path` 是空串。这是区分"用户手敲的名字"和"桌面随机 slug"的唯一可靠信号（slug 形状本身不够，`fix-login` 也像 slug）。`is_desktop_auto_name` 就靠这个 + slug 形状两者并存来判定。
+- **`--separate-git-dir` 仓库的 `WorktreeCreate` cwd 是 gitdir**：工作树里的 `.git` 是文件（`gitdir: <别处>`）时，`EnterWorktree` 传来的 `.cwd` 是 gitdir 本身，不是工作树，`rev-parse --show-toplevel` 必挂（2026-10-24 实测）。gitdir 里没有指回主工作树的记录，只能从已登记的 linked worktree 路径反推：在**第一个** `/.claude/worktrees/` 处截断（嵌套的 agent worktree 路径里出现两次，贪婪匹配会截成外层 worktree），再挑 `rev-parse --absolute-git-dir` 等于当前 gitdir 的那个（linked worktree 的是 `<gitdir>/worktrees/<id>`）。仓库还没有任何 linked worktree 时无解，照旧报错。
 - **`WorktreeRemove` 的 stdin**：路径字段是 `.worktree_path`（snake_case），**不是** `.path` 或 `.worktreePath`。
 - **`WorktreeRemove` 的 cwd 陷阱**：CC 调用此 hook 时，cwd 就是**即将被删的 worktree 本身**。在这个 cwd 直接跑 `git worktree remove` 或 `git branch -D` 会失败 —— git 拒绝自删 cwd，也拒绝删除当前 checked-out 的 branch。所有写操作必须通过 `git -C "$MAIN_REPO"` 执行，其中 `MAIN_REPO` 由 `git worktree list --porcelain` 的第一条记录解析得到。
 - **必须成对配置**：一旦配了 `WorktreeCreate`，就**必须**同时配 `WorktreeRemove`。CC 的默认清理在 `/exit` 时不会跑 —— 即使是干净的 worktree 也不会被自动移除。这一点文档没写。

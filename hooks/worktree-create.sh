@@ -128,7 +128,28 @@ fi
 
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository (cwd=$PWD)"
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  # --separate-git-dir layout: EnterWorktree follows the .git file's `gitdir:`
+  # and hands us the git dir itself as cwd, not a work tree. The git dir has no
+  # pointer back to its main work tree, so recover it from the registered
+  # linked worktrees (by convention under <root>/.claude/worktrees/): cut each
+  # path at the FIRST /.claude/worktrees/ (nested agent worktrees contain it
+  # twice) and keep the candidate whose own git dir is ours — a linked
+  # worktree's is <gitdir>/worktrees/<id>, only the main work tree's matches.
+  GITDIR="$(git rev-parse --absolute-git-dir)"
+  REPO_ROOT=""
+  while IFS= read -r cand; do
+    if [[ "$(git -C "$cand" rev-parse --absolute-git-dir 2>/dev/null)" == "$GITDIR" ]]; then
+      REPO_ROOT="$cand"
+      break
+    fi
+  done < <(git worktree list --porcelain | sed -n 's#^worktree ##p' \
+             | awk '{ i = index($0, "/.claude/worktrees/"); if (i) print substr($0, 1, i - 1) }' \
+             | sort -u)
+  [[ -n "$REPO_ROOT" ]] \
+    || die "cwd is not a work tree and no linked worktree under */.claude/worktrees/ leads back to git dir $GITDIR (cwd=$PWD)"
+  log "cwd $PWD is a git dir, derived REPO_ROOT=$REPO_ROOT from linked worktrees"
+fi
 
 # ---- Resolve target BRANCH ----
 
