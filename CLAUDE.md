@@ -47,9 +47,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `feature/<rest>` | `feature/<YYMMDD>-<rest>` | `origin/develop` | `feature/<YYMMDD>-<rest>/` |
 | `hotfix/<rest>` | `hotfix/<YYMMDD>-<rest>` | `origin/master` | `hotfix/<YYMMDD>-<rest>/` |
 | `<slug>`（desktop 自动名）| `claude/<YYMMDD>-<slug>` | `origin/HEAD` | `<YYMMDD>-<slug>/` |
+| `agent-<hex>`（Agent 工具 `isolation: worktree`）| `worktree-agent-<hex>` | 父 session 当前 `HEAD` | `agent-<hex>/` |
 | 其他 | `worktree-<name>` | `origin/HEAD`（fallback） | `<name>/` |
 
 如果目标仓库没有约定的 base（例如没有 `origin/develop`），自动回退到 `origin/HEAD`，保证脚本在不使用 git-flow 的项目里也能用。
+
+**`agent-<hex>` 这一行**：之前它落在「其他」、从 `origin/HEAD` 起步。在 feature worktree 里分单元派 isolation agent 时，每个 worker 都从 `origin/develop` 开始，看不到前面单元已经合进父分支的改动（2026-10-24 实测）。所以改成从父 session 那棵 tree 的 `HEAD` 起步。用户手敲 `-w agent-<hex>` 也走这一行。测试：`hooks/worktree-create.test.sh`。
 
 **desktop 自动名这一行**是为 Claude Code 桌面版准备的：桌面版创建 worktree 时不给输入 name 的机会，CC 直接发一个 docker 风格随机 slug（`sad-tharp-abb433`），没有 feat/hotfix 语义。识别条件是 **`transcript_path` 为空 + slug 形状（`词-词[-6位hex]`）两者同时成立**（判据见 `is_desktop_auto_name`）——只满足形状不够，因为你手敲的 `fix-login` 也长得像 slug，但它带着真实 session 的 `transcript_path`。命中后给它盖日期戳、挂在桌面自己的 `claude/` 前缀下（branch 带 `claude/` 前缀，目录是扁平的 `<YYMMDD>-<slug>`，不嵌套 `claude/` 子目录）。和 feat/hotfix 一样，跨天再进同一个 slug 会复用已有的 dated branch 而不是再盖一个新日期。
 

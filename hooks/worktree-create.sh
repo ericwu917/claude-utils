@@ -10,7 +10,8 @@
 #     feature/<rest>  feature/<YYMMDD>-<rest> (develop) feature/<YYMMDD>-<rest>/
 #     hotfix/<rest>   hotfix/<YYMMDD>-<rest> (master)   hotfix/<YYMMDD>-<rest>/
 #     <slug> *        claude/<YYMMDD>-<slug> (HEAD)     <YYMMDD>-<slug>/  (desktop auto-name)
-#     <other>         worktree-<name>        (HEAD)     <name>/    (matches CC default)
+#     agent-<hex>     worktree-agent-<hex>   (parent HEAD) agent-<hex>/  (Agent isolation)
+#     <other>         worktree-<name>        (origin/HEAD) <name>/    (matches CC default)
 #
 #   * <slug> = a desktop-generated docker-style name (empty transcript_path +
 #     word-word[-hex6], e.g. sad-tharp-abb433). A name you TYPE on the CLI rides
@@ -224,6 +225,13 @@ case "$NAME" in
     fi
     BASE="$(git -C "$REPO_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     [[ -n "$BASE" ]] || BASE="HEAD"
+    # Agent-tool isolation worktrees (agent-<hex>) start from the parent
+    # session's current HEAD, so a unit sees the earlier units already merged
+    # into the parent branch instead of a stale origin/HEAD.
+    if [[ "$NAME" =~ ^agent-[0-9a-f]+$ ]] && git -C "$REPO_ROOT" rev-parse --verify --quiet HEAD >/dev/null; then
+      BASE="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+      log "agent isolation worktree $NAME: base = parent HEAD $BASE (cwd=$PWD)"
+    fi
     ;;
 esac
 
