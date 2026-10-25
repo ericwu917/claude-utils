@@ -11,7 +11,8 @@
 #   - inside the active tree's root, EXCEPT its own .claude/worktrees/ (those
 #     are OTHER trees; the main repo is treated as just another tree)
 #   - temp / scratch dirs ($TMPDIR, /tmp, the harness scratchpad)
-#   - ~/.claude  (your global CC config)
+#   - ~/.claude and $CLAUDE_CONFIG_DIR  (your global CC config; they differ
+#     when CC runs with a relocated config dir)
 #   - the project's own <main-repo>/.claude/  EXCEPT .claude/worktrees/ — the
 #     worktree session loads skills/agents/settings from the main repo's .claude/
 #     (via the filesystem walk), so editing them is intentional; but editing some
@@ -37,8 +38,8 @@
 #     only one `git rev-parse`, and the `git worktree list` fallback runs only
 #     for worktrees outside the <repo>/.claude/worktrees/ convention.
 #   - DEBUG (below): at 1, every invocation logs its params + verdict EXCEPT
-#     in-root — that is the bulk of real traffic and would drown the log. At 0,
-#     only `ask` decisions are logged.
+#     in-root and the always-allow prefixes (allow:*) — together they are ~all
+#     real traffic and would drown the log. At 0, only `ask` decisions are logged.
 
 set -uo pipefail
 
@@ -48,11 +49,11 @@ DEBUG=1   # 1 = log every call (params + verdict); 0 = log only `ask` decisions.
 STDIN_JSON="$(cat)"
 
 # Single exit point. $1 = ALLOW|ASK, $2 = short reason tag, $3 = ask reason text.
-# Logs one record per call when DEBUG=1 — minus in-root, which is the bulk of
-# real traffic and carries no signal — and always for ASK; then emits the ask
-# JSON on stdout only for ASK. Vars may be unset at early exits → ${x:-?}.
+# Logs one record per call when DEBUG=1 — minus in-root and allow:*, which are
+# the bulk of real traffic and carry no signal — and always for ASK; then emits
+# the ask JSON on stdout only for ASK. Vars may be unset at early exits → ${x:-?}.
 verdict() {
-  if [[ "$1" == ASK || ( "$DEBUG" == 1 && "$2" != in-root ) ]]; then
+  if [[ "$1" == ASK || ( "$DEBUG" == 1 && "$2" != in-root && "$2" != allow:* ) ]]; then
     {
       printf '%s %s(%s) tool=%s\n' "$(date -Iseconds)" "$1" "$2" "${TOOL:-?}"
       printf '  cwd=%s\n  target=%s\n  root=%s\n' "${CWD:-?}" "${ABS:-?}" "${ROOT:-?}"
@@ -111,8 +112,9 @@ ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$ROOT" ]] || verdict ALLOW not-git
 ROOT="$(canondir "$ROOT")"
 
-# Always-allow prefixes: temp/scratch dirs and the user's global ~/.claude.
-for t in "${TMPDIR:-}" /tmp /private/tmp /var/folders "$HOME/.claude"; do
+# Always-allow prefixes: temp/scratch dirs and the user's global CC config
+# (~/.claude, plus $CLAUDE_CONFIG_DIR when CC runs with a relocated one).
+for t in "${TMPDIR:-}" /tmp /private/tmp /var/folders "$HOME/.claude" "${CLAUDE_CONFIG_DIR:-}"; do
   [[ -n "$t" ]] || continue
   tc="$(canondir "$t")"
   [[ -n "$tc" ]] || continue
