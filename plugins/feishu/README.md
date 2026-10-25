@@ -75,7 +75,7 @@
 FEISHU_CHANNEL=1 claude --dangerously-load-development-channels plugin:feishu@claude-utils
 ```
 
-> **`FEISHU_CHANNEL=1` 不能省**：插件装在 user 级时，每个 Claude Code 会话都会起一份 server，而飞书把每条事件只推给该应用众多长连接里的一条——别的会话一连上就会把消息"抢走"然后丢掉。所以只有带 `FEISHU_CHANNEL=1` 启动的会话才连飞书，其他会话里插件不连接、`reply` 直接报错。同一个应用也不要同时开两个带 `FEISHU_CHANNEL=1` 的会话。
+> **`FEISHU_CHANNEL=1` 不能省**：插件装在 user 级时，每个 Claude Code 会话都会起一份 server，而飞书把每条事件只推给该应用众多长连接里的一条——别的会话一连上就会把消息"抢走"然后丢掉。所以只有带 `FEISHU_CHANNEL=1` 启动的会话才连飞书，其他会话里插件不连接、`reply` 直接报错。同一个状态目录同时只能有一个 channel 会话：先起的会话在状态目录里写 `channel.lock`（内容是插件进程的 pid），后起的带 `FEISHU_CHANNEL=1` 的会话看到锁还被活着的进程持有，就不连飞书，`reply` 报错并给出占用者的 pid。会话正常退出时释放锁；被强杀留下的锁，下次启动发现进程已不在会自动接管。
 
 > Team / Enterprise 组织的管理员把本插件加进 `allowedChannelPlugins` 后，才可以改用 `claude --channels plugin:feishu@claude-utils`。
 

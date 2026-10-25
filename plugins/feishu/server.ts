@@ -91,6 +91,7 @@ import {
   type InboundResource,
 } from './lib.ts'
 import { cleanInbox, downloadResources, prepareInbox, readPrefix, type FetchedResource } from './inbox.ts'
+import { acquireChannelLock, releaseChannelLock } from './lock.ts'
 
 const STATE_DIR = process.env.FEISHU_STATE_DIR
   ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'channels', 'feishu')
@@ -120,9 +121,9 @@ const STATIC = process.env.FEISHU_ACCESS_MODE === 'static'
 // idle session would swallow messages meant for the channel session. Only the
 // session launched with FEISHU_CHANNEL=1 connects; elsewhere this server only
 // answers MCP.
-const ACTIVE = process.env.FEISHU_CHANNEL === '1'
+const WANT_CHANNEL = process.env.FEISHU_CHANNEL === '1'
 
-if (ACTIVE && (!APP_ID || !APP_SECRET)) {
+if (WANT_CHANNEL && (!APP_ID || !APP_SECRET)) {
   process.stderr.write(
     `feishu channel: FEISHU_APP_ID and FEISHU_APP_SECRET required\n` +
     `  set in ${ENV_FILE}\n` +
@@ -137,6 +138,18 @@ if (DOMAIN_NAME !== 'feishu' && DOMAIN_NAME !== 'lark') {
   process.exit(1)
 }
 const DOMAIN = DOMAIN_NAME === 'lark' ? Domain.Lark : Domain.Feishu
+
+// Only one channel session per state dir (see lock.ts). One that finds the
+// lock held stays up as a plain MCP server: reply says who has the channel.
+const LOCK = WANT_CHANNEL ? acquireChannelLock(STATE_DIR) : undefined
+const ACTIVE = LOCK?.ok === true
+if (LOCK && !LOCK.ok) {
+  process.stderr.write(
+    `feishu channel: another Claude Code session (pid ${LOCK.holder}) is already the Feishu channel; ` +
+    `not connecting. Lock file: ${LOCK.path}\n`,
+  )
+}
+if (ACTIVE) process.on('exit', () => releaseChannelLock(STATE_DIR))
 
 // Last-resort safety net — without these the process dies silently on any
 // unhandled promise rejection. With them it logs and keeps serving tools.
@@ -801,6 +814,8 @@ mcp.setNotificationHandler(
     }),
   }),
   async ({ params }) => {
+    // Not the channel session: the answer would arrive on the other one's connection.
+    if (!ACTIVE) return
     const { request_id, tool_name, description, input_preview } = params
     noteBounded(recentPermissionIds, request_id.toLowerCase(), 200)
     const access = loadAccess()
@@ -959,6 +974,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   try {
     switch (req.params.name) {
       case 'reply': {
+        if (LOCK && !LOCK.ok) {
+          throw new Error(
+            `another Claude Code session (pid ${LOCK.holder}) is already the Feishu channel — only one session per app receives messages. ` +
+            `Lock file: ${LOCK.path}`,
+          )
+        }
         if (!ACTIVE) {
           throw new Error(
             'the Feishu channel is not active in this session — it only connects when Claude Code is started with FEISHU_CHANNEL=1',
@@ -1644,6 +1665,6 @@ async function connectFeishu(): Promise<void> {
 
 if (ACTIVE) {
   await connectFeishu()
-} else {
+} else if (!WANT_CHANNEL) {
   process.stderr.write('feishu channel: FEISHU_CHANNEL is not 1 — not connecting to Feishu in this session\n')
 }
